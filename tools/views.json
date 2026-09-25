@@ -1,0 +1,12 @@
+[
+  { "name": "overview",        "xz": [1500, 2900],   "agl": 420, "heading": 312, "pitch": -24, "note": "SE of centre looking NW over the whole city" },
+  { "name": "center_aerial",   "xz": [150, 950],     "agl": 220, "heading": 350, "pitch": -28, "note": "Eternal Flame / city park / Kino Mir from the south" },
+  { "name": "center_street",   "xz": [-20, 240],     "agl": 1.7, "heading": 20,  "pitch": 0,   "note": "pedestrian eye level near Kino Mir" },
+  { "name": "kuban_river",     "xz": [-980, 520],    "agl": 25,  "heading": 340, "pitch": -8,  "note": "Kuban river by the city park embankment" },
+  { "name": "industrial_north","xz": [900, -700],    "agl": 260, "heading": 330, "pitch": -18, "note": "Azot chemical plant + Nevinnomysskaya GRES (250 m chimney) to the north" },
+  { "name": "private_sector",  "xz": [2600, 3600],   "agl": 45,  "heading": 0,   "pitch": -14, "note": "single-family houses with pitched roofs and gardens" },
+  { "name": "station",         "xz": [1880, 1330],   "agl": 60,  "heading": 0,   "pitch": -14, "note": "Nevinnomysskaya railway station and rail yard" },
+  { "name": "cathedral",       "xz": [1440, 2920],   "agl": 30,  "heading": 0,   "pitch": -6,  "note": "Pokrovsky cathedral" },
+  { "name": "south_horizon",   "xz": [0, -2500],     "agl": 900, "heading": 180, "pitch": -6,  "note": "high view south over the city towards the Caucasus" },
+  { "name": "street_level_2",  "xz": [700, 1900],    "agl": 1.7, "heading": 90,  "pitch": 2,   "note": "street level near Rodina cultural centre" }
+]

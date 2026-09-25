@@ -1,0 +1,38 @@
+{
+  "name": "nevinnomyssk-3d",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Nevinnomyssk (Невинномысск) recreated in real-time 3D in the browser",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "shot": "node tools/shot.mjs"
+  },
+  "dependencies": {
+    "@dgreenheck/ez-tree": "^1.1.0",
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "@takram/three-atmosphere": "^0.19.1",
+    "@takram/three-clouds": "^0.7.6",
+    "@takram/three-geospatial": "^0.9.1",
+    "earcut": "^3.2.3",
+    "lil-gui": "^0.21.0",
+    "n8ao": "^2.0.1",
+    "postprocessing": "^6.39.5",
+    "proj4": "^2.22.0",
+    "stats-gl": "^4.2.3",
+    "three": "^0.186.1",
+    "three-gpu-pathtracer": "^0.0.24",
+    "three-mesh-bvh": "^0.9.15"
+  },
+  "devDependencies": {
+    "@types/earcut": "^3.0.0",
+    "@types/proj4": "^2.5.6",
+    "@types/three": "^0.186.0",
+    "playwright-core": "^1.56.1",
+    "typescript": "~5.9",
+    "vite": "^8.3.1"
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/processed/
+*.log
+.DS_Store
+tools/shots/
+/tmp/

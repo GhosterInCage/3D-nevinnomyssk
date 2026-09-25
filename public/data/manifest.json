@@ -1,0 +1,28 @@
+{
+  "name": "Nevinnomyssk",
+  "origin": {
+    "lon": 41.94,
+    "lat": 44.64
+  },
+  "proj": "+proj=tmerc +lat_0=44.64 +lon_0=41.94 +k=1 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs",
+  "frame": "three.js world: X=east, Y=up (m above sea level), Z=-north; pipeline (x=east,y=north)",
+  "region": {
+    "half": 10240.0,
+    "res": 10.0,
+    "n": 2048
+  },
+  "terrain": {
+    "height": "terrain/height.bin.gz",
+    "n": 2049,
+    "size": 20480.0,
+    "hMin": 200.0,
+    "hScale": 0.02,
+    "format": "u16le",
+    "rowOrder": "north-to-south",
+    "ortho": "terrain/ortho.jpg",
+    "orthoGain": 1.0,
+    "landcover": "terrain/landcover.png",
+    "minHeight": 278.993896484375,
+    "maxHeight": 697.2498168945312
+  }
+}
