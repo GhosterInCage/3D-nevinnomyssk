@@ -114,7 +114,13 @@ try {
     await page.evaluate(() => new Promise((r) => { const c = window.__city.ctx; const f = c.frame; const off = c.events.on('frame', (n) => { if (n - f >= 2) { off(); r(); } }); }));
     fs.mkdirSync(path.dirname(file), { recursive: true });
     await page.screenshot({ path: file });
-    console.log('saved', file);
+    const info = await page.evaluate(() => {
+      const r = window.__city.ctx.renderer.info;
+      const heap = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null;
+      return { calls: r.render.calls, triangles: r.render.triangles, points: r.render.points, lines: r.render.lines,
+        geometries: r.memory.geometries, textures: r.memory.textures, programs: r.programs?.length, heapMB: heap };
+    });
+    console.log('saved', file, JSON.stringify(info));
   };
   if (views) {
     const dir = args.dir || 'tools/shots';
