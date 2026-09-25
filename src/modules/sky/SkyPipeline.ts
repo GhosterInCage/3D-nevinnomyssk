@@ -12,6 +12,7 @@ import {
   EdgeDetectionMode,
   EffectComposer,
   EffectPass,
+  FXAAEffect,
   Pass,
   SMAAEffect,
   SMAAPreset,
@@ -36,7 +37,9 @@ export class SkyPipeline implements RenderPipeline {
   readonly atmosphere: AtmosphereEffect;
   readonly grade = new GradeEffect();
   readonly bloom: BloomEffect;
-  readonly smaa: SMAAEffect;
+  readonly smaa: SMAAEffect | null = null;
+  readonly fxaa: FXAAEffect | null = null;
+  readonly soft: boolean;
   n8ao: any = null;
   private atmospherePass: EffectPass;
   private postPass: EffectPass;
@@ -49,6 +52,7 @@ export class SkyPipeline implements RenderPipeline {
 
   constructor(private ctx: AppContext, shared: SkyUniforms, hooks: PipelineHooks = {}) {
     const r = ctx.renderer;
+    this.soft = SkyPipeline.softwareGL(r);
     this.composer = new EffectComposer(r, {
       frameBufferType: THREE.HalfFloatType,
       depthBuffer: true,
@@ -72,6 +76,7 @@ export class SkyPipeline implements RenderPipeline {
     this.atmosphere.skApLut.value = this.buffers.lut.texture;
     this.atmosphere.skCloudBuf.value = this.buffers.cloudColor;
     this.atmosphere.skCloudDist.value = this.buffers.cloudDist;
+    this.atmosphere.skCloudTexel.value = this.buffers.cloudTexel;
     this.atmospherePass = new EffectPass(this.apCamera, this.atmosphere);
     this.composer.addPass(this.atmospherePass);
 
@@ -81,30 +86,41 @@ export class SkyPipeline implements RenderPipeline {
       luminanceThreshold: 1.0,
       luminanceSmoothing: 0.25,
       radius: 0.7,
-      levels: 7,
+      levels: this.soft ? 4 : 7,
     });
     this.bloom.blendMode.opacity.value = prof.bloom ? 1 : 0;
     this.postPass = new EffectPass(this.apCamera, this.bloom, this.grade);
     this.postPass.dithering = true;
     this.composer.addPass(this.postPass);
 
-    this.smaa = new SMAAEffect({ preset: SMAAPreset.HIGH, edgeDetectionMode: EdgeDetectionMode.COLOR });
-    this.smaaPass = new EffectPass(this.apCamera, this.smaa);
+    if (this.soft) {
+      // software GL: one-pass FXAA instead of 3-pass SMAA
+      this.fxaa = new FXAAEffect();
+      this.smaaPass = new EffectPass(this.apCamera, this.fxaa);
+    } else {
+      this.smaa = new SMAAEffect({ preset: SMAAPreset.HIGH, edgeDetectionMode: EdgeDetectionMode.COLOR });
+      this.smaaPass = new EffectPass(this.apCamera, this.smaa);
+    }
     this.composer.addPass(this.smaaPass);
   }
 
   static bufferConfig(ctx: AppContext): BufferConfig {
     const q = ctx.settings.quality;
     const soft = SkyPipeline.softwareGL(ctx.renderer);
+    if (soft) return { lutW: 32, lutH: 18, lutD: 16, cloudDiv: 3, cloudSubs: 3 };
     return {
-      lutW: q === 'low' || soft ? 48 : 64,
-      lutH: q === 'low' || soft ? 27 : 36,
-      lutD: q === 'low' || soft ? 24 : 32,
-      cloudDiv: q === 'ultra' ? 1 : soft || q === 'low' ? 3 : 2,
+      lutW: q === 'low' ? 48 : 64,
+      lutH: q === 'low' ? 27 : 36,
+      lutD: q === 'low' ? 24 : 32,
+      cloudDiv: q === 'ultra' ? 1 : q === 'low' ? 3 : 2,
+      cloudSubs: q === 'low' ? 1 : q === 'medium' ? 2 : 3,
     };
   }
 
   static softwareGL(r: THREE.WebGLRenderer): boolean {
+    const force = new URLSearchParams(location.search).get('skysoft');
+    if (force === '0') return false;
+    if (force === '1') return true;
     try {
       const gl = r.getContext();
       const ext = gl.getExtension('WEBGL_debug_renderer_info');
@@ -126,7 +142,7 @@ export class SkyPipeline implements RenderPipeline {
       n8.configuration.halfRes = this.ctx.settings.quality !== 'ultra';
       n8.configuration.depthAwareUpsampling = true;
       n8.configuration.accumulate = false;
-      n8.setQualityMode(this.ctx.settings.quality === 'medium' ? 'Low' : 'Medium');
+      n8.setQualityMode(this.soft ? 'Performance' : this.ctx.settings.quality === 'medium' ? 'Low' : 'Medium');
       this.composer.addPass(n8, 1);
       this.n8ao = n8;
     } catch (e) {
@@ -164,8 +180,45 @@ export class SkyPipeline implements RenderPipeline {
     a.updateMatrixWorld(true);
   }
 
+  /** Screenshot mode: skip re-rendering identical frames so the (software) GPU stays idle. */
+  onDemand = false;
+  private lastSig = '';
+  private stableCount = 0;
+  private lastRenderWall = 0;
+
+  private signature(): string {
+    const c = this.ctx.camera;
+    const e = c.matrixWorld.elements;
+    let s = '';
+    for (let i = 0; i < 16; i++) s += e[i].toFixed(3) + ',';
+    s += `${c.fov}|${c.aspect}|${this.ctx.env.hours.toFixed(4)}|${this.ctx.width}x${this.ctx.height}`;
+    const m = this.ctx.renderer.info.memory;
+    s += `|${m.geometries}|${m.textures}`;
+    let n = 0;
+    this.ctx.scene.traverseVisible((o: any) => { if (o.isMesh || o.isPoints || o.isLine || o.isSprite) n++; });
+    this.ctx.backdrop.scene.traverseVisible((o: any) => { if (o.isMesh) n++; });
+    s += `|${n}|${this.sigExtra}`;
+    return s;
+  }
+  /** Extra state that must trigger a re-render in on-demand mode (weather etc.). */
+  sigExtra = '';
+  /** Force the next frames to render (on-demand/screenshot mode). */
+  invalidate(): void { this.lastSig = ''; }
+
   render(dt: number): void {
     if (this.disposed) return;
+    let t0 = 0;
+    if (this.onDemand) {
+      const sig = this.signature();
+      const now = performance.now();
+      if (sig !== this.lastSig) {
+        if (this.debugLog && this.renders < 60) console.info(`[sky] sig change: ${diffSig(this.lastSig, sig)}`);
+        this.lastSig = sig; this.stableCount = 0;
+      } else if (this.stableCount >= 1 && now - this.lastRenderWall < 60000) return;
+      else this.stableCount++;
+      this.lastRenderWall = now;
+      t0 = now;
+    }
     this.syncCamera();
     this.grade.exposure = this.exposure;
     this.bloom.luminanceMaterial.threshold = this.bloomThreshold / Math.max(1e-4, this.exposure);
@@ -177,7 +230,11 @@ export class SkyPipeline implements RenderPipeline {
       this.ctx.renderer.setRenderTarget(null);
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.px);
     }
+    this.renders++;
+    if (this.onDemand && this.debugLog && this.renders < 60) console.info(`[sky] render #${this.renders} ${Math.round(performance.now() - t0)} ms`);
   }
+  renders = 0;
+  debugLog = false;
   private px = new Uint8Array(4);
   /** Block until the GPU finished each frame (enabled in shot mode). */
   syncFrames = false;
@@ -203,4 +260,11 @@ class HookPass extends Pass {
   override render(renderer: THREE.WebGLRenderer, _in: THREE.WebGLRenderTarget, _out: THREE.WebGLRenderTarget, dt?: number): void {
     try { this.hooks.beforeAtmosphere?.(renderer, dt ?? 0); } catch (e) { console.error('[sky] hook', e); }
   }
+}
+
+function diffSig(a: string, b: string): string {
+  const x = a.split('|'), y = b.split('|');
+  const out: string[] = [];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if (x[i] !== y[i]) out.push(`${i}:${(x[i] ?? '').slice(0, 24)}->${(y[i] ?? '').slice(0, 24)}`);
+  return out.join(' ');
 }

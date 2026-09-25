@@ -7,7 +7,8 @@
   ground   terrain_ground.py   5 m ground-class map, shading/wetness map, graded ortho and
                                de-roofed ground albedo  -> public/data/terrain/ground_*.{png,jpg}
   far      terrain_far.py      far terrain (+-184 km: Caucasus / Elbrus, Stavropol upland)
-                               -> public/data/terrain/far_*.{bin.gz,jpg}
+                               -> public/data/terrain/far.json, far_mesh.bin.gz, far_{color,normal}.jpg
+                               (downloads are cached in data/processed/far_tiles, far_s2.npy, far_built.npy)
   textures terrain_textures.py tiling ground detail textures -> public/textures/terrain/
   export   build_terrain_base.py  height.bin.gz / ortho.jpg / landcover.png / manifest.json
 
@@ -32,6 +33,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = f"{PROC}/terrain_state.json"
 WATER_SURFACE = f"{PROC}/water_surface.npy"
 WATER_DEPTH = f"{PROC}/water_depth.npy"
+WATER_SDF = f"{PROC}/water_sdf.npy"
+WATER_LEVEL_EXT = f"{PROC}/water_level_ext.npy"
 TER = os.path.join(WEB_DATA, "terrain")
 TEX = os.path.join(ROOT, "public", "textures", "terrain")
 
@@ -62,7 +65,7 @@ def main():
     if "--force" in sys.argv:
         force = set(sys.argv[sys.argv.index("--force") + 1].split(","))
     state = load_state()
-    wmt = max(mtime(WATER_SURFACE), mtime(WATER_DEPTH))
+    wmt = max(mtime(WATER_SURFACE), mtime(WATER_DEPTH), mtime(WATER_SDF), mtime(WATER_LEVEL_EXT))
     if "--if-water-changed" in sys.argv and state.get("water_surface_mtime") == wmt:
         print("terrain: water_surface.npy unchanged -> nothing to do")
         return
@@ -76,7 +79,7 @@ def main():
         runpy.run_path(code("terrain_bare.py"), run_name="__main__")
 
     # ---- carve water beds
-    carve_inputs = [f"{PROC}/terrain_bare.npy", code("terrain_water.py"), WATER_SURFACE, WATER_DEPTH]
+    carve_inputs = [f"{PROC}/terrain_bare.npy", code("terrain_water.py"), WATER_SURFACE, WATER_DEPTH, WATER_SDF, WATER_LEVEL_EXT]
     if stale([f"{PROC}/terrain_final.npy"], carve_inputs, "carve", force) or state.get("water_surface_mtime") != wmt:
         print("== terrain: carve water beds", "(water module surface)" if wmt else "(fallback surface estimate)", flush=True)
         from terrain_water import water_kinds, estimate_surface, carve
@@ -92,7 +95,13 @@ def main():
         hint = np.load(WATER_DEPTH).astype(np.float32) if (wmt and os.path.exists(WATER_DEPTH)) else None
         if hint is not None and hint.shape != h.shape:
             hint = None
-        hc, depth = carve(h, surf, kinds, hint)
+        sdf = lvx = None
+        if wmt and os.path.exists(WATER_SDF) and os.path.exists(WATER_LEVEL_EXT):
+            sdf = np.load(WATER_SDF).astype(np.float32)
+            lvx = np.load(WATER_LEVEL_EXT).astype(np.float32)
+            if sdf.shape != h.shape or lvx.shape != h.shape:
+                sdf = lvx = None
+        hc, depth = carve(h, surf, kinds, hint, sdf, lvx)
         np.save(f"{PROC}/terrain_final.npy", hc.astype(np.float32))
         np.save(f"{PROC}/terrain_water_depth.npy", depth.astype(np.float32))
         state["water_surface_mtime"] = wmt
@@ -100,14 +109,15 @@ def main():
 
     # ---- ground classes / shading / ortho
     if os.path.exists(code("terrain_ground.py")) and stale(
-            [f"{TER}/ground_class.png", f"{TER}/ground_shade.jpg", f"{PROC}/terrain_ortho.npy"],
+            [f"{TER}/ground_class.bin.gz", f"{TER}/ground_shade.jpg", f"{TER}/ground_albedo.jpg", f"{PROC}/terrain_ortho.npy"],
             [f"{PROC}/terrain_final.npy", code("terrain_ground.py"), f"{PROC}/s2_rgb.npy"] + raw, "ground", force):
         print("== terrain: ground maps", flush=True)
         runpy.run_path(code("terrain_ground.py"), run_name="__main__")
 
     # ---- far terrain (network; cached)
     if os.path.exists(code("terrain_far.py")) and stale(
-            [f"{TER}/far_height.bin.gz", f"{TER}/far_color.jpg"], [code("terrain_far.py")], "far", force):
+            [f"{TER}/far.json", f"{TER}/far_mesh.bin.gz", f"{TER}/far_color.jpg", f"{TER}/far_normal.jpg"],
+            [code("terrain_far.py"), f"{PROC}/terrain_final.npy"], "far", force):
         print("== terrain: far terrain", flush=True)
         runpy.run_path(code("terrain_far.py"), run_name="__main__")
 

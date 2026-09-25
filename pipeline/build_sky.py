@@ -9,7 +9,7 @@ Channels (each histogram-equalised to ~uniform [0,1] so that a threshold of
   B  detail / erosion                - high-frequency inverted Worley fbm (sampled at several scales)
   A  large-scale weather variation   - very low frequency fbm (clear gaps vs. cloud banks)
 
-The runtime maps one tile to CLOUD_TILE metres (see src/modules/sky/constants.ts).
+The runtime maps one tile to CLOUD_TILE metres (10 km, see src/modules/sky/index.ts).
 Everything is generated with periodic (toroidal) constructions: spectral synthesis
 for fbm noise and wrap-around Worley cells, so the texture tiles without seams.
 
@@ -98,14 +98,16 @@ def main():
         seed = int(sys.argv[sys.argv.index("--seed") + 1])
     rng = np.random.default_rng(seed)
 
-    # --- R: cumulus perlin-worley: clustered billowy cells of ~1-2 km
-    perlin = spectral_noise(rng, N, beta=3.0, kmin=1.5, kmax=24)
-    perlin = (np.tanh(perlin * 0.9) + 1) * 0.5  # 0..1, low frequency clustering
-    w = worley_fbm(rng, N, 12, octaves=3, gain=0.4)
-    w = (w - w.min()) / (w.max() - w.min())
-    pw = remap(perlin, -(1.0 - w) * 0.9, 1.0, 0.0, 1.0)  # Horizon-ZD style perlin-worley
-    pw = np.clip(pw, 0, None)
-    r = equalize(pw + 0.04 * spectral_noise(rng, N, beta=1.6, kmin=30, kmax=160))
+    # --- R: cumulus field: distinct rounded cells (inverted Worley, ~0.6 and
+    # ~0.3 km at a 10 km tile) clustered by low-frequency noise
+    cluster = spectral_noise(rng, N, beta=3.0, kmin=1.0, kmax=7)
+    cluster = (np.tanh(cluster * 0.9) + 1) * 0.5
+    c1 = 1.0 - worley(rng, N, 16)
+    c2 = 1.0 - worley(rng, N, 32)
+    c3 = 1.0 - worley(rng, N, 64)
+    shape = c1 * 0.62 + c2 * 0.28 + c3 * 0.10
+    pw = shape * (0.35 + 0.65 * cluster)
+    r = equalize(pw + 0.03 * spectral_noise(rng, N, beta=1.6, kmin=30, kmax=160))
 
     # --- G: cirrus streaks (stretched noise, rotated), with finer streak detail
     ci = spectral_noise(rng, N, beta=2.6, kmin=2, kmax=120, aniso=(0.18, 1.0), angle=0.5)

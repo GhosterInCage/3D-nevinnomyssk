@@ -16,13 +16,13 @@
     "n": 2049,
     "size": 20480.0,
     "hMin": 200.0,
-    "hScale": 0.02,
+    "hScale": 0.04,
     "format": "u16le",
     "rowOrder": "north-to-south",
     "ortho": "terrain/ortho.jpg",
     "orthoGain": 1.0,
     "landcover": "terrain/landcover.png",
-    "minHeight": 276.9226379394531,
+    "minHeight": 276.5969543457031,
     "maxHeight": 697.3012084960938
   }
 }

@@ -180,7 +180,7 @@ if (spdN > 0.05) {
   vec2 lA = toFlow * (wp.xz - offLA);
   vec2 lB = toFlow * (wp.xz - offLB);
   vec2 big = mix(wSlope(tRipple, lB / vec2(26.0, 17.0) + 0.21).xy, wSlope(tRipple, lA / vec2(26.0, 17.0) + 0.63).xy, wL);
-  ripple += (fromFlow * big) * 1.1 * spdN;
+  ripple += (fromFlow * big) * 0.55 * spdN;
 }
 float toks = mix(rB.z, rA.z, wA);
 // turbulence grows with flow speed; slack water keeps only faint ripples
@@ -226,8 +226,8 @@ Tr = mix(Tr, 1.0, 1.0 - smoothstep(0.0, 0.06, dpos));
 // ---- foam / white water
 // baked turbulence (weir, riffles) scaled by the actual current; bars only foam in fast water
 float fastN = smoothstep(0.6, 2.2, spd);
-float fm = vFoamB * (0.35 + 0.65 * fastN);
-fm += (1.0 - smoothstep(0.02, 0.3, dpos)) * fastN * 0.3;
+float fm = min(vFoamB, 0.85) * (0.3 + 0.55 * fastN);
+fm += (1.0 - smoothstep(0.02, 0.3, dpos)) * fastN * 0.2;
 fm += smoothstep(1.2, 3.2, spd) * 0.22;
 fm += riffle * fastN * 0.25;
 fm *= 1.0 - isPool;
@@ -242,8 +242,11 @@ if (fm > 0.01) {
   float fine = mix(texture2D(tFoam, (wp.xz - offB) / 1.3).r, texture2D(tFoam, (wp.xz - offA) / 1.3 + 0.3).r, wA);
   float clump = mix(bB, bA, wL);
   float pat = (fp * 0.7 + fine * 0.45) * (0.35 + 1.2 * clump);
-  foamA = smoothstep(1.05 - fm, 1.3 - fm, pat) * clamp(fm * 1.8, 0.0, 1.0);
-  foamA = mix(foamA, clamp(fm, 0.0, 1.0) * 0.45, far);
+  // threshold at the pattern quantile so that the covered fraction ~ foam amount
+  float fmc = clamp(fm, 0.0, 0.95);
+  float thr = 0.70 * exp(-2.3 * pow(fmc, 0.8));
+  foamA = smoothstep(thr - 0.05, thr + 0.14, pat);
+  foamA = mix(foamA, fmc * 0.45, far);
   foamA *= smoothstep(-0.02, 0.05, depth);
 }
 
@@ -252,11 +255,15 @@ float waterA = 1.0 - Tr;
 vec3 scatter = vAlb.rgb;
 // turbid rivers look lighter/greyer in fast shallow reaches (resuspended silt)
 scatter *= (1.0 + 0.25 * vBar) * mix(1.0, 0.86 + 0.28 * boil, spdN);
-diffuseColor.rgb = scatter * (1.0 - Fr) * waterA * (1.0 - foamA) + vec3(0.78, 0.79, 0.77) * foamA;
+// foam on silty water is never paper-white: partly translucent, tinted by the water
+float foamTone = 0.55 + 0.25 * smoothstep(0.2, 0.9, foamA);
+vec3 foamCol = mix(vec3(0.80, 0.80, 0.77), scatter * 6.0, 0.18);
+diffuseColor.rgb = scatter * (1.0 - Fr) * waterA * (1.0 - foamA) + foamCol * foamTone * foamA;
 float wAlpha = 1.0 - (1.0 - Fr) * Tr * (1.0 - foamA);
 // roughness: base + unresolved waves at distance (specular anti-aliasing via Toksvig) + foam
 float tk = clamp(toks, 0.3, 1.0);
 float rough = vPar.x + (1.0 - tk) / tk * 0.35 + far * 0.10 + turb * 0.05 + windAmp * 0.03 + riffle * 0.08;
+rough += uRain * 0.08 * (1.0 - far);
 roughnessFactor = mix(rough, 0.6, foamA);
 
 // ---- planar reflection sample (applied to the IBL radiance after <lights_fragment_maps>)
@@ -277,14 +284,15 @@ vec4 wRefl = vec4(0.0);
         + texture2D(tReflect, clamp(cu + vec2(0.0, 2.2 * smear), vec2(0.001), vec2(0.999))) * 0.1
         + texture2D(tReflect, clamp(cu - vec2(0.0, 2.2 * smear), vec2(0.001), vec2(0.999))) * 0.1;
   float dy = abs(wp.y - uReflY);
-  wRefl.a *= uReflOn * (1.0 - smoothstep(0.6, 4.0, dy)) * (1.0 - foamA);
+  // the target is cleared to transparent black, so filtered samples are premultiplied
+  wRefl *= uReflOn * (1.0 - smoothstep(0.6, 4.0, dy)) * (1.0 - foamA);
 }
 #endif
 `;
 
 const FRAG_REFL = /* glsl */ `
 #ifdef WATER_PLANAR
-radiance = mix(radiance, wRefl.rgb, clamp(wRefl.a, 0.0, 1.0));
+radiance = radiance * (1.0 - clamp(wRefl.a, 0.0, 1.0)) + wRefl.rgb;
 #endif
 `;
 

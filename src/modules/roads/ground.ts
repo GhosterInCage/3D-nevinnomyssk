@@ -73,6 +73,12 @@ export interface TileMeshes {
 }
 
 const K_SKIRT = 0, K_CURB = 1, K_MARK = 2;
+
+/** Proxy materials for the path tracer (the real ones are custom shaders). */
+export const PT = {
+  asphalt: new THREE.MeshPhysicalMaterial({ color: 0x3a3a3a, roughness: 0.85 }),
+  concrete: new THREE.MeshPhysicalMaterial({ color: 0x8c8a86, roughness: 0.8 }),
+};
 const nrmTmp = [0, 1, 0];
 
 /** Build the draped geometry of one super-tile (tiles = pipeline tiles inside it). */
@@ -145,6 +151,7 @@ export function buildSuperTile(ctx: AppContext, data: RoadsData, tiles: TileRec[
     groundMesh.receiveShadow = true;
     groundMesh.castShadow = false;
     groundMesh.name = 'roads-ground';
+    groundMesh.userData.ptMaterial = PT.asphalt;
     groundMesh.matrixAutoUpdate = false;
   }
 
@@ -158,6 +165,7 @@ export function buildSuperTile(ctx: AppContext, data: RoadsData, tiles: TileRec[
     marks.receiveShadow = true;
     marks.renderOrder = 1;
     marks.name = 'roads-markings';
+    marks.userData.noPathTrace = true;
     marks.matrixAutoUpdate = false;
   }
   return { ground: groundMesh, marks, tris: (idx.length + (mg?.index?.count ?? 0)) / 3 };
@@ -165,26 +173,29 @@ export function buildSuperTile(ctx: AppContext, data: RoadsData, tiles: TileRec[
 
 /** Raised surface edge: vertical face (sidewalk/platform) or sloped shoulder (ballast). */
 function addSkirt(sb: SurfaceBuilder, p: PolyRec, ground: Ground): void {
-  const sid = p.style;
-  const top = ELEV[sid] ?? 0.18;
-  const slope = sid === S.BALLAST;
-  const surf = sid === S.BALLAST ? S.BALLAST : sid === S.PLATFORM ? S.STRUCT : S.CURB;
+  const sid = p.style & 255;
+  const outer = (p.style & 256) !== 0; // not along a carriageway
+  const top = ELEV[sid] ?? 0.15;
+  const ballast = sid === S.BALLAST;
+  // sidewalks: vertical curb face towards roads, a steep bevelled border stone elsewhere;
+  // ballast: sloped shoulder (vertical towards level crossings); platforms: vertical wall
+  const run = ballast ? (outer ? 0.6 : 0.0) : sid === S.PLATFORM ? 0.0 : outer ? 0.14 : 0.0;
+  const surf = ballast ? S.BALLAST : sid === S.PLATFORM ? S.STRUCT : S.CURB;
   const pts = densify(p.pts, 8);
   const n = pts.length >> 1;
   let prevTop = -1, prevBot = -1;
   for (let i = 0; i < n; i++) {
     const x = pts[i * 2], z = pts[i * 2 + 1];
-    // tangent
     const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
     let tx = pts[b * 2] - pts[a * 2], tz = pts[b * 2 + 1] - pts[a * 2 + 1];
     const tl = Math.hypot(tx, tz) || 1;
     tx /= tl; tz /= tl;
     const ox = tz, oz = -tx; // outward (rings oriented by the pipeline)
     const h = ground.height(x, z);
-    let bx = x, bz = z, by = h - 0.06;
-    if (slope) { bx = x + ox * 0.55; bz = z + oz * 0.55; by = ground.height(bx, bz) - 0.05; }
-    const ny = slope ? 0.8 : 0.0;
-    const nl = Math.hypot(ox, ny, oz);
+    const bx = x + ox * run, bz = z + oz * run;
+    const by = (run > 0 ? ground.height(bx, bz) : h) - 0.05;
+    const ny = run > 0 ? run / (top + 0.05) : 0.3;
+    const nl = Math.hypot(1, ny);
     const vt = sb.vert(x, h + top, z, ox / nl, ny / nl, oz / nl, surf, 0, 0, 255, 0);
     const vb = sb.vert(bx, by, bz, ox / nl, ny / nl, oz / nl, surf, 0, 0, 255, 0);
     if (prevTop >= 0) {
@@ -214,8 +225,8 @@ function addCurb(sb: SurfaceBuilder, p: PolyRec, ground: Ground): void {
     const l = Math.hypot(ax, az) || 1;
     const nx = ax / l, nz = az / l;
     // road face (normal towards the road), top, back face
-    const v0 = sb.vert(x, h0 - 0.02, z, -nx, 0, -nz, S.CURB);
-    const v1 = sb.vert(x, h0 + TOP, z, -nx, 0.3, -nz, S.CURB);
+    const v0 = sb.vert(x, h0 - 0.02, z, -nx, 0.35, -nz, S.CURB);
+    const v1 = sb.vert(x, h0 + TOP, z, -nx, 0.45, -nz, S.CURB);
     const v2 = sb.vert(x, h0 + TOP, z, 0, 1, 0, S.CURB);
     const v3 = sb.vert(x1, h1 + TOP, z1, 0, 1, 0, S.CURB);
     const cur = [v0, v1, v2, v3];
@@ -244,8 +255,9 @@ function addMarking(mb: SurfaceBuilder, p: PolyRec, surfY: SurfaceY, ground: Gro
     const x = pts[i * 2], z = pts[i * 2 + 1];
     if (i > 0) along += Math.hypot(x - pts[i * 2 - 2], z - pts[i * 2 - 1]);
     const nx = nrm[i * 2] * w, nz = nrm[i * 2 + 1] * w;
-    const yl = surfY(x - nx, z - nz, p.group) + 0.012;
-    const yr = surfY(x + nx, z + nz, p.group) + 0.012;
+    const lift = p.group >= 0 ? 0.012 : ELEV[S.ASPH] + 0.012;
+    const yl = surfY(x - nx, z - nz, p.group) + lift;
+    const yr = surfY(x + nx, z + nz, p.group) + lift;
     ground.normal(x, z, nrmTmp);
     const vl = mb.vert(x - nx, yl, z - nz, nrmTmp[0], nrmTmp[1], nrmTmp[2], surf, p.style, 0, 255, along);
     const vr = mb.vert(x + nx, yr, z + nz, nrmTmp[0], nrmTmp[1], nrmTmp[2], surf, p.style, 0, 255, along);

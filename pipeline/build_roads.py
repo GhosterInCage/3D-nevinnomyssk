@@ -292,6 +292,10 @@ def load_water():
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    tex = os.path.join(WEB_DATA, "..", "textures", "roads", "surf_albedo.jpg")
+    if not os.path.exists(tex) or "--textures" in sys.argv:
+        import roads_textures
+        roads_textures.main()
     zone_at, bld_geoms, bld_tree = build_zones()
     segs = load_segments()
     water = load_water()
@@ -623,13 +627,20 @@ def build_graph(segs, groups):
             degd[e["b"]] += 1
     names = sorted({e["name"] for e in edges if e["name"]})
     name_idx = {n: i for i, n in enumerate(names)}
-    # junction table: nodes with >= 3 drivable edges -> radius = widest incident half width + 1.5
+    # junction table: nodes where >= 3 public streets meet (service driveways / tracks do not count)
+    # -> radius = widest incident half width + 1.5
+    STREET = DRIVABLE - {"service", "track", "unknown"}
+    degs = np.zeros(len(nodes), int)
+    for e in edges:
+        if e["cls"] in STREET:
+            degs[e["a"]] += 1
+            degs[e["b"]] += 1
     jr = np.zeros(len(nodes))
     for e in edges:
-        if e["cls"] not in DRIVABLE:
+        if e["cls"] not in STREET:
             continue
         for k in (e["a"], e["b"]):
-            if degd[k] >= 3:
+            if degs[k] >= 3:
                 jr[k] = max(jr[k], e["w"] / 2 + 1.5)
     junctions = dict(pts=nodes[jr > 0], r=jr[jr > 0], node=np.nonzero(jr > 0)[0])
     # pack
@@ -812,6 +823,13 @@ def build_surfaces(rlines, segs, zone_at, junctions, water):
         if r["cls"] in FOOT:
             sid = r["surf"]
             foot_by[sid].append(rl_buffer(r, r["hw"]))
+    # pedestrian squares from land use
+    lu = pq.read_table(os.path.join(RAW, "base_land_use.parquet"), columns=["class", "geometry"]).to_pylist()
+    for row in lu:
+        if row["class"] in ("pedestrian", "plaza"):
+            g = to_world(row["geometry"])
+            if g.geom_type in ("Polygon", "MultiPolygon"):
+                foot_by[S_PAVING].append(g.buffer(0))
     pave_zone = Point(CENTER).buffer(1500)
     sidewalks = shapely.union_all(sw_polys) if sw_polys else Polygon()
     sw_pave = sidewalks.intersection(pave_zone)
@@ -1019,6 +1037,7 @@ def build_ground(polys, rlines, junctions):
     # skirts (raised surfaces), curbs
     pool = Pool()
     carriage = polys["carriage"]
+    shapely.prepare(carriage)
     for sid in (S_PAVING, S_SIDEWALK, S_BALLAST, S_PLATFORM):
         g = surfaces.get(sid)
         if g is None or g.is_empty:
@@ -1030,7 +1049,21 @@ def build_ground(polys, rlines, junctions):
             # on the (-tz, tx) side of travel, so the outward normal is (tz, -tx)
             poly = shapely.geometry.polygon.orient(poly, 1.0)
             for ring in [poly.exterior] + list(poly.interiors):
-                pool.add(np.array(ring.coords), K_SKIRT, sid, 0)
+                pts = np.array(ring.coords)
+                if sid == S_PLATFORM:
+                    pool.add(pts, K_SKIRT, sid, 0)
+                    continue
+                # split into runs: along a carriageway -> vertical curb face; elsewhere -> bevel / slope
+                dense = resample(pts, 1.5)
+                near = shapely.dwithin(carriage, shapely.points(dense), 0.4)
+                start = 0
+                for k in range(1, len(dense) + 1):
+                    if k == len(dense) or near[k] != near[start]:
+                        run = dense[max(0, start - 1 if start > 0 else 0):k + (1 if k < len(dense) else 0)]
+                        if len(run) >= 2:
+                            run = np.array(LineString(run).simplify(0.04).coords)
+                            pool.add(run, K_SKIRT, sid | (0 if near[start] else 256), 0)
+                        start = k
     # curbs: carriageway edge portions in the curb zone that are not already bounded by raised sidewalks
     cz = polys["curbzone"]
     if not cz.is_empty:

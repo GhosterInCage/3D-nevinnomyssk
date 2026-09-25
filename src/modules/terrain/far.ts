@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import type { AppContext } from '../../core/context';
 import { dataUrl, fetchBuffer, fetchJSON } from '../../core/data';
 import { lockOnBeforeCompile } from './material';
+import { HAZE_PARS } from './shaders';
+import type { Haze } from './haze';
 
 interface FarTile { x0: number; z0: number; size: number; nv: number; ni: number; offV: number; offI: number }
 interface FarMeta {
@@ -51,43 +53,39 @@ const FRAG_PARS = /* glsl */ `
 uniform sampler2D uColor;
 uniform sampler2D uNormal;
 uniform vec3 uCam;
-uniform vec3 uSunDir;
-uniform vec3 uHazeCol;      // in-scattered radiance at infinity (horizon)
-uniform vec3 uBetaR;        // Rayleigh extinction at sea level (1/m)
-uniform float uBetaM;       // Mie extinction at sea level (1/m)
-uniform vec2 uScaleH;       // (Rayleigh, Mie) scale heights (m)
-uniform float uSunGlow;
-uniform float uHazeOn;      // own aerial perspective (only without the sky pipeline)
+${HAZE_PARS}
+uniform vec3 uNightLight;   // settlement light radiance at full built-up fraction (0 by day)
+uniform float uRegionHalfF;
 varying vec3 vFarW;
 varying vec2 vFarUv;
-float odPath(float beta, float H, float h0, float h1, float len) {
-  float a = exp(-max(h0, -200.0) / H), b = exp(-max(h1, -200.0) / H);
-  float dh = h1 - h0;
-  float avg = abs(dh) < 1.0 ? a : H * (a - b) / dh;
-  return beta * len * avg;
-}
 vec3 farNormalW;
+float farBuilt;
+float fHash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 `;
 
 const FRAG_MAP = /* glsl */ `
 diffuseColor.rgb *= texture2D(uColor, vFarUv).rgb;
 {
-  vec2 nn = texture2D(uNormal, vFarUv).rg * 2.0 - 1.0;
+  vec3 ns = texture2D(uNormal, vFarUv).rgb;
+  vec2 nn = ns.rg * 2.0 - 1.0;
   farNormalW = normalize(vec3(nn.x, sqrt(max(1.0 - dot(nn, nn), 0.0)), nn.y));
+  farBuilt = ns.b;
+}
+`;
+
+const FRAG_EMISSIVE = /* glsl */ `
+#include <emissivemap_fragment>
+if (uNightLight.r > 0.0) {
+  // settlements outside the detailed region glow at night (clustered, not uniform)
+  bool outside = abs(vFarW.x) > uRegionHalfF || abs(vFarW.z) > uRegionHalfF;
+  vec2 cell = floor(vFarW.xz / 350.0);
+  float cl = 0.35 + 0.65 * fHash(cell) * fHash(cell.yx + 7.0);
+  totalEmissiveRadiance += outside ? uNightLight * farBuilt * farBuilt * cl * 2.0 : vec3(0.0);
 }
 `;
 
 const FRAG_HAZE = /* glsl */ `
-if (uHazeOn > 0.5) {
-  vec3 v = vFarW - uCam;
-  float len = length(v);
-  vec3 odR = uBetaR * odPath(1.0, uScaleH.x, uCam.y, vFarW.y, len);
-  float odM = odPath(uBetaM, uScaleH.y, uCam.y, vFarW.y, len);
-  vec3 T = exp(-(odR + vec3(odM)));
-  float mu = dot(v / max(len, 1.0), uSunDir);
-  vec3 haze = uHazeCol * (1.0 + uSunGlow * pow(max(mu, 0.0), 8.0));
-  gl_FragColor.rgb = gl_FragColor.rgb * T + haze * (1.0 - T);
-}
+if (uHazeOn > 0.5) gl_FragColor.rgb = hzApply(gl_FragColor.rgb, uCam, vFarW);
 #include <tonemapping_fragment>
 `;
 
@@ -97,12 +95,11 @@ export class FarTerrain {
   meta!: FarMeta;
   material!: THREE.MeshStandardMaterial;
   uniforms!: Record<string, THREE.IUniform>;
-  /** Horizontal visibility (km) on a clear day; scaled down by env.fog. */
-  visibilityKm = 170;
-  private hazeOverride: THREE.Color | null = null;
+  /** Settlement light radiance at night (sodium orange, scaled by the built-up fraction). */
+  nightLights = 0.5;
   private triangles = 0;
 
-  constructor(private ctx: AppContext) {
+  constructor(private ctx: AppContext, private haze: Haze) {
     this.group.name = 'terrain-far';
   }
 
@@ -130,13 +127,9 @@ export class FarTerrain {
       uRegionHalf: { value: meta.regionHalf },
       uEffR: { value: EARTH_R / (1 - REFRACTION_K) },
       uFarHalf: { value: meta.half },
-      uSunDir: { value: new THREE.Vector3(0, 1, 0) },
-      uHazeCol: { value: new THREE.Vector3(0.5, 0.6, 0.75) },
-      uBetaR: { value: new THREE.Vector3(5.8e-6, 13.5e-6, 33.1e-6) },
-      uBetaM: { value: 8e-6 },
-      uScaleH: { value: new THREE.Vector2(8000, 1300) },
-      uSunGlow: { value: 1.5 },
-      uHazeOn: { value: 1 },
+      ...this.haze.uniforms,
+      uNightLight: { value: new THREE.Vector3() },
+      uRegionHalfF: { value: meta.regionHalf },
     };
     const uniforms = this.uniforms;
     const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.97, metalness: 0 });
@@ -150,6 +143,7 @@ export class FarTerrain {
         .replace('#include <common>', `#include <common>\n${FRAG_PARS}`)
         .replace('#include <map_fragment>', FRAG_MAP)
         .replace('#include <normal_fragment_maps>', 'normal = normalize((viewMatrix * vec4(farNormalW, 0.0)).xyz);')
+        .replace('#include <emissivemap_fragment>', FRAG_EMISSIVE)
         .replace('#include <tonemapping_fragment>', FRAG_HAZE);
     });
     mat.customProgramCacheKey = () => 'terrain-far-v1';
@@ -184,32 +178,17 @@ export class FarTerrain {
     this.ctx.backdrop.scene.add(this.group);
   }
 
-  /** Override the haze colour (linear radiance) and/or visibility; pass null to use scene fog. */
-  setAtmosphere(opts: { hazeColor?: THREE.Color | null; visibilityKm?: number }): void {
-    if (opts.hazeColor !== undefined) this.hazeOverride = opts.hazeColor ? opts.hazeColor.clone() : null;
-    if (opts.visibilityKm !== undefined) this.visibilityKm = opts.visibilityKm;
-  }
-
   update(): void {
     if (!this.material) return;
-    const ctx = this.ctx, env = ctx.env, u = this.uniforms;
+    const ctx = this.ctx, u = this.uniforms;
     (u.uCam.value as THREE.Vector3).copy(ctx.camera.position);
-    (u.uSunDir.value as THREE.Vector3).copy(env.sunDirection);
-    // with the sky module the post-processing pipeline applies aerial perspective to the
-    // backdrop (combined depth); otherwise we apply our own
-    const skyAP = !!ctx.get('sky');
-    u.uHazeOn.value = skyAP ? 0 : 1;
-    if (skyAP) return;
-    const hz = u.uHazeCol.value as THREE.Vector3;
-    const fog = ctx.scene.fog as THREE.Fog | THREE.FogExp2 | null;
-    const day = Math.max(0.02, Math.min(1, env.sunDirection.y * 3 + 0.15));
-    if (this.hazeOverride) hz.set(this.hazeOverride.r, this.hazeOverride.g, this.hazeOverride.b);
-    else if (fog) hz.set(fog.color.r, fog.color.g, fog.color.b).multiplyScalar(day);
-    else hz.set(0.62, 0.72, 0.86).multiplyScalar(day);
-    // visibility -> Mie extinction at sea level (Koschmieder: beta = 3.912 / V)
-    const vis = this.visibilityKm * (1 - 0.9 * Math.min(1, env.fog)) * (1 - 0.5 * Math.min(1, env.rain));
-    const betaTotal = 3.912 / (Math.max(5, vis) * 1000);
-    u.uBetaM.value = Math.max(1e-6, betaTotal - 1.2e-5);
+    (u.uNightLight.value as THREE.Vector3).set(1.0, 0.58, 0.26).multiplyScalar(this.nightLights * ctx.env.night);
+  }
+
+  /** Stand-alone haze parameters (ignored while the sky module renders aerial perspective). */
+  setAtmosphere(opts: { hazeColor?: THREE.Color | null; visibilityKm?: number }): void {
+    if (opts.hazeColor !== undefined) this.haze.hazeOverride = opts.hazeColor ? opts.hazeColor.clone() : null;
+    if (opts.visibilityKm !== undefined) this.haze.visibilityKm = opts.visibilityKm;
   }
 
   stats(): Record<string, number> {

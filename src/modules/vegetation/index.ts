@@ -11,6 +11,7 @@ import { generateTree, type GenParams, type TreeModel } from './treegen';
 import { Forest, forestParams, type Textures } from './forest';
 import { Grass } from './grass';
 import { VU } from './materials';
+import { QUALITY, type Quality } from '../../core/settings';
 
 const TEX_BASE = `${import.meta.env.BASE_URL}textures/vegetation/`;
 
@@ -51,8 +52,10 @@ async function generateModels(): Promise<Map<number, TreeModel>> {
   const nW = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
   const buckets: Array<Array<{ id: number; gen: GenParams }>> = Array.from({ length: nW }, () => []);
   // heaviest species first, round robin
-  const order = [...SPECIES].sort((a, b) => (b.gen.points ?? 400) * b.gen.height - (a.gen.points ?? 400) * a.gen.height);
-  order.forEach((d, i) => buckets[i % nW].push({ id: d.id, gen: d.gen }));
+  const jobs: Array<{ id: number; gen: GenParams }> = [];
+  for (const d of SPECIES) for (let v = 0; v < (d.variants ?? 1); v++) jobs.push({ id: d.id * 8 + v, gen: { ...d.gen, seed: d.gen.seed + v * 7919 } });
+  jobs.sort((a, b) => (b.gen.points ?? 400) * b.gen.height - (a.gen.points ?? 400) * a.gen.height);
+  jobs.forEach((j, i) => buckets[i % nW].push(j));
   await Promise.all(buckets.map((jobs) => new Promise<void>((resolve) => {
     if (!jobs.length) return resolve();
     let w: Worker;
@@ -72,9 +75,9 @@ async function generateModels(): Promise<Map<number, TreeModel>> {
     w.onerror = (e) => { console.warn('[vegetation] worker error', e.message); clearTimeout(timer); w.terminate(); resolve(); };
     w.postMessage({ jobs });
   })));
-  for (const d of SPECIES) {
-    if (out.has(d.id)) continue;
-    try { out.set(d.id, generateTree(d.gen)); } catch (e) { console.warn('[vegetation] generate', d.name, e); }
+  for (const j of jobs) {
+    if (out.has(j.id)) continue;
+    try { out.set(j.id, generateTree(j.gen)); } catch (e) { console.warn('[vegetation] generate', j.id, e); }
   }
   return out;
 }
@@ -82,6 +85,7 @@ async function generateModels(): Promise<Map<number, TreeModel>> {
 const idle = () => new Promise<void>((r) => setTimeout(r, 0));
 
 let forest: Forest | null = null;
+let grassOn = true;
 let grass: Grass | null = null;
 let data: VegData | null = null;
 const pendingClears: number[][] = [];
@@ -147,8 +151,10 @@ const mod: CityModule = {
 
     const dbg = new Set((ctx.settings.params.get('vegdbg') || '').split(',').filter(Boolean));
     (globalThis as any).__vegdbg = dbg;
-    const quality = ctx.settings.quality;
-    const prof = ctx.settings.profile;
+    // ?vegq=<tier> overrides the vegetation tier only (testing on slow software renderers)
+    const vq = ctx.settings.params.get('vegq');
+    const quality = vq && QUALITY[vq as Quality] ? (vq as Quality) : ctx.settings.quality;
+    const prof = QUALITY[quality];
     const t0 = performance.now();
 
     const build = (async () => {
@@ -163,9 +169,11 @@ const mod: CityModule = {
       const f = new Forest(ctx, d, fp);
       let slot = 0;
       for (const def of SPECIES) {
-        const m = models.get(def.id);
-        if (!m) continue;
-        f.addSpecies(def, m, tex, def.kind === 'tree' ? slot++ : -1);
+        for (let v = 0; v < (def.variants ?? 1); v++) {
+          const m = models.get(def.id * 8 + v);
+          if (!m) continue;
+          f.addSpecies(def, m, tex, def.kind === 'tree' ? slot++ : -1, v);
+        }
       }
       tm('species meshes');
       f.bakeImpostors(tex);
@@ -174,21 +182,23 @@ const mod: CityModule = {
       forest = f;
       for (const r of pendingClears.splice(0)) applyClear(r);
       // far field: build everything in view distance before signalling ready (time-sliced)
-      if (!dbg.has('nofar')) while (!f.buildChunks(25, fp.drawDistance)) await idle();
+      if (!dbg.has('nofar')) while (!f.buildChunks(ctx.settings.shot ? 400 : 60, fp.drawDistance)) await idle();
       console.info(`[vegetation] ${d.n} instances, ${models.size} species models, ready in ${Math.round(performance.now() - t0)} ms`);
     })();
 
-    const grassBuild = (async () => {
-      if (!prof.grass || dbg.has('nograss')) return;
+    let grassLoading: Promise<void> | null = null;
+    const makeGrass = (q: Quality): Promise<void> => grassLoading ??= (async () => {
       const [bitsBuf, cover, ctype, ortho] = await Promise.all([
         fetchBuffer('vegetation/nogrow.bin.gz'),
         loadTexture(dataUrl('vegetation/cover.jpg'), { srgb: false, flipY: false, mips: false }),
         loadTexture(dataUrl('vegetation/covertype.png'), { srgb: false, flipY: false, nearest: true }),
         loadTexture(dataUrl(ctx.manifest.terrain.ortho), { srgb: true, flipY: false, mips: false }),
       ]);
-      grass = new Grass(ctx, new Uint8Array(bitsBuf), cover, ctype, ortho, quality, prof.vegetationDensity);
+      grass = new Grass(ctx, new Uint8Array(bitsBuf), cover, ctype, ortho, q, QUALITY[q].vegetationDensity);
       for (const r of pendingClears) grass.addClear(r);
     })();
+    grassOn = prof.grass && !dbg.has('nograss');
+    const grassBuild = grassOn ? makeGrass(quality) : Promise.resolve();
 
     ctx.pending(build.catch((e) => console.error('[vegetation] build failed', e)));
     ctx.pending(grassBuild.catch((e) => console.error('[vegetation] grass failed', e)));
@@ -198,7 +208,9 @@ const mod: CityModule = {
       const p = forestParams(ctx.settings.quality, ctx.settings.profile.drawDistance, ctx.settings.profile.shadowFar);
       // impostor atlas resolution is fixed at startup; LOD distances follow the new tier
       forest.p = { ...p, impFrames: forest.p.impFrames, impFramePx: forest.p.impFramePx, impBlend: forest.p.impBlend };
-      if (grass) grass.group.visible = ctx.settings.profile.grass;
+      grassOn = ctx.settings.profile.grass && !dbg.has('nograss');
+      if (grass) grass.group.visible = grassOn;
+      else if (grassOn) makeGrass(ctx.settings.quality).catch((e) => console.error('[vegetation] grass failed', e));
     });
   },
 
@@ -209,7 +221,7 @@ const mod: CityModule = {
     try {
       forest.update();
       if (forest.pendingChunks && !((globalThis as any).__vegdbg as Set<string>)?.has('nofar')) forest.buildChunks(4);
-      if (grass && ctx.settings.profile.grass) grass.update();
+      if (grass && grassOn) grass.update();
     } catch (e) {
       console.error('[vegetation] update', e);
     }

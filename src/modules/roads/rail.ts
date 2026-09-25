@@ -82,7 +82,7 @@ export class Rail {
   railTop(x: number, z: number, g: number): number {
     const s = this.surf(x, z, g);
     const k = g >= 0 ? 0 : this.crossK(x, z);
-    return s + TOP * (1 - k) + 0.07 * k;
+    return s + TOP * (1 - k) + 0.1 * k;
   }
 
   private buildChunk(c: Chunk): THREE.Group {
@@ -125,7 +125,7 @@ export class Rail {
       }
     }
     // sleepers every 0.55 m
-    const sc: [number, number, number] = concrete ? [0.47, 0.46, 0.44] : [0.2, 0.14, 0.09];
+    const sc: [number, number, number] = concrete ? [0.3, 0.29, 0.275] : [0.16, 0.11, 0.075];
     const first = Math.ceil(c.s0 / 0.55) * 0.55;
     for (let s = first; s < c.s1; s += 0.55) {
       pl.at(s, P);

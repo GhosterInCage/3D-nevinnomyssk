@@ -10,6 +10,8 @@ import { RoadGraph, signalState } from './service';
 import { Furniture } from './furniture';
 import { Rail } from './rail';
 import { Power } from './power';
+import { LAMP_HEAD } from './models';
+import { headingToDir } from './geom';
 
 interface SuperTile { key: number; cx: number; cz: number; tiles: TileRec[]; polys: PolyRec[]; ground: THREE.Mesh | null; marks: THREE.Mesh | null; built: boolean }
 
@@ -128,7 +130,10 @@ class Roads {
     for (let i = 0; i < fr.lights.length; i += 6) {
       const typ = fr.lights[i + 3];
       if (typ === 4) continue;
-      lamps.push({ x: fr.lights[i], z: fr.lights[i + 1], typ: typ === 0 || typ === 3 ? 0 : 1 });
+      // light source = luminaire head, overhanging the road
+      const hd = LAMP_HEAD[typ] ?? [0, 9, -1.5];
+      const [fx, fz] = headingToDir(fr.lights[i + 2]);
+      lamps.push({ x: fr.lights[i] - fx * hd[2], z: fr.lights[i + 1] - fz * hd[2], typ: typ === 0 || typ === 3 ? 0 : 1 });
     }
     const lm = makeLampMap(lamps, H, 16);
     this.u.rsLamp.value = lm.tex;
@@ -169,7 +174,8 @@ class Roads {
         console.error('[roads] tile build failed', e);
       }
       st.built = true;
-      if (performance.now() - t0 > 40) {
+      // interactive: keep frames flowing; screenshot mode (SwiftShader): frames are very slow, build in bulk
+      if (performance.now() - t0 > (this.ctx.settings.shot ? 4000 : 40)) {
         await new Promise((r) => setTimeout(r, 0));
         t0 = performance.now();
       }

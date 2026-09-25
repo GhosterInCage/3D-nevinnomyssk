@@ -108,14 +108,21 @@ vec2 skCloudUv(const vec2 xz) {
   return (xz + skCloudP0.zw) * skCloudP0.y;
 }
 
-// signed coverage field (large-scale variation included); density ramp 0..1
-float skCloudDensityCoarse(const vec2 xz) {
+// coverage field (large-scale variation included); density ramp 0..1.
+// thick = local optical-thickness modulation (structure inside an overcast deck)
+float skCloudDensity2(const vec2 xz, out float thick) {
   vec2 uv = skCloudUv(xz);
   vec4 c = texture(skCloudTex, uv);
   float large = texture(skCloudTex, SK_ROT * uv * 0.37 + 0.21).a;
   float cov = clamp(skCloudP0.x + (large - 0.5) * skCloudP1.w * (1.0 - skCloudP0.x) * 2.0, 0.0, 1.0);
   float th = 1.0 - cov * 1.35;
+  float ovc = smoothstep(0.7, 1.0, skCloudP0.x);
+  thick = mix(1.0, 0.45 + 0.75 * c.r + 0.5 * large, ovc);
   return saturate((c.r - th) / 0.35);
+}
+float skCloudDensityCoarse(const vec2 xz) {
+  float thick;
+  return skCloudDensity2(xz, thick);
 }
 
 float skCloudDensity(const vec2 xz, const float detail) {
@@ -136,8 +143,8 @@ float skCloudShadowAt(const vec3 pW) {
   float t = (alt - pW.y) / max(s.y, 0.05);
   vec2 q = pW.xz + s.xz * t;
   float d = skCloudDensityCoarse(q);
-  float tau = d * skCloudP1.z * 0.45;
-  return exp(-tau);
+  float tau = d * skCloudP1.z * 0.35;
+  return mix(1.0, 0.2, 1.0 - exp(-tau));
 }
 
 // Night sky base radiance (airglow + light pollution), app units
@@ -260,71 +267,71 @@ float skIGN(const vec2 p) {
 }
 
 vec4 skMarchCumulus(const vec3 ro, const vec3 rd, const float jitter, out float tMean) {
+  // Deterministic altitude-stratified integration: N planes (shells) between
+  // cloud base and top; each plane samples the 2D coverage and keeps it only
+  // where the dome-shaped column reaches that height. No per-pixel noise,
+  // parallax for oblique rays, flat bases, rounded tops.
   tMean = 1e9;
   if (skCloudP0.x <= 0.001) return vec4(0.0);
   float hb = skCloudP1.x;
   float H = skCloudP1.y;
   float camAlt = length(ro + vec3(0.0, SK_R, 0.0)) - SK_R;
-  float tb = skShellHit(ro, rd, hb);
-  float tt = skShellHit(ro, rd, hb + H);
-  float t0;
-  float t1;
-  if (camAlt < hb) {
-    if (tb < 0.0) return vec4(0.0);
-    t0 = tb;
-    t1 = tt > 0.0 ? tt : tb + skCloudP3.y;
-  } else if (camAlt > hb + H) {
-    if (tt < 0.0) return vec4(0.0);
-    t0 = tt;
-    t1 = tb > 0.0 ? tb : tt + skCloudP3.y;
-  } else {
-    t0 = 0.0;
-    t1 = rd.y > 0.0 ? tt : tb;
-    if (t1 < 0.0) t1 = skCloudP3.y;
-  }
-  if (t0 > 1.6e5) return vec4(0.0);
-  t1 = min(t1, t0 + skCloudP3.y);
-  float fsteps = skCloudP3.x;
-  float dt = (t1 - t0) / fsteps;
+  float n = skCloudP3.x;
   float cosT = dot(rd, skCloudKeyDirW);
-  float phase = mix(skHG(cosT, 0.78), skHG(cosT, -0.2), 0.35);
-  float keyMu = max(skCloudKeyDirW.y, 0.05);
+  float phase = mix(skHG(cosT, 0.75), skHG(cosT, -0.2), 0.3);
+  float keyMu = max(skCloudKeyDirW.y, 0.06);
   float sigma0 = skCloudP1.z / (H * 0.55) * skCloudP3.z;
-  float lod = clamp((t0 - 4000.0) / 50000.0, 0.0, 1.0);
-  float detailK = skCloudP3.w * mix(1.0, 0.35, lod);
+  vec3 amb = skCloudAmb * (1.0 / PI);
+  vec3 gnd = skCloudGnd * (1.0 / PI);
   vec3 Lsum = vec3(0.0);
   float T = 1.0;
   float tw = 0.0;
   float ws = 0.0;
-  vec3 amb = skCloudAmb * (1.0 / (2.0 * PI));
-  vec3 gnd = skCloudGnd * (1.0 / (2.0 * PI));
-  for (int i = 0; i < 64; i++) {
-    if (float(i) >= fsteps || T < 0.015) break;
-    float t = t0 + (float(i) + jitter) * dt;
+  bool below = camAlt < hb + H * 0.5;
+  float dh = H / n;
+  float jit = (jitter - 0.5) * 0.95;
+  for (int i = 0; i < 24; i++) {
+    if (float(i) >= n || T < 0.01) break;
+    // planes ordered from the camera outward
+    float fi = below ? float(i) : n - 1.0 - float(i);
+    float hf = (fi + 0.5 + jit) / n;               // height fraction of this plane
+    float alt = hb + hf * H;
+    if (below ? alt < camAlt : alt > camAlt) continue;
+    float t = skShellHit(ro, rd, alt);
+    if (t <= 0.0 || t > 1.6e5) continue;
     vec3 p = ro + rd * t;
-    float h = (length(p + vec3(0.0, SK_R, 0.0)) - SK_R - hb) / H;
-    float d = skCloudDensityCoarse(p.xz);
+    float thick;
+    float d = skCloudDensity2(p.xz, thick);
     if (d < 0.01) continue;
-    float top = pow(d, 0.55);
-    float prof = (1.0 - smoothstep(top * 0.72 - 0.06, top, h)) * smoothstep(-0.02, 0.09, h);
+    float top = pow(d, 0.6);
+    top = min(1.0, top * (0.9 + 0.2 * jitter));
+    float prof = (1.0 - smoothstep(top * 0.55, top, hf)) * smoothstep(0.0, 0.12, hf + 0.04);
     if (prof <= 0.0) continue;
-    vec2 duv = skCloudUv(p.xz);
-    float det = texture(skCloudTex, duv * 5.3 + vec2(0.13, skTime * 0.00003)).b * 0.7
-              + texture(skCloudTex, SK_ROT * duv * 13.1 + 0.4).b * 0.3;
-    float dens = clamp(d * prof * 1.25 - det * detailK * (1.0 - d * 0.55), 0.0, 1.0);
+    float lod = clamp((t - 3000.0) / 40000.0, 0.0, 1.0);
+    // detail varies continuously with height (oblique projection of a 2D noise = pseudo-3D)
+    vec2 duv = skCloudUv(p.xz + vec2(0.55, -0.35) * (hf * H));
+    float det = texture(skCloudTex, duv * 5.3 + vec2(0.13, skTime * 0.00003)).b * 0.65
+              + texture(skCloudTex, SK_ROT * duv * 13.1 + 0.4).b * 0.35;
+    float dens = clamp(d * prof * 1.3 - det * skCloudP3.w * mix(1.0, 0.4, lod) * (1.0 - d * 0.5), 0.0, 1.0);
     if (dens <= 0.0) continue;
-    float sig = dens * sigma0;
-    float toTop = max(top - h, 0.0) * H;
-    float tauKey = sigma0 * d * toTop / keyMu * 0.75;
-    float Tkey = exp(-tauKey) + 0.28 * exp(-tauKey * 0.12);
-    float tauUp = sigma0 * d * toTop * 0.35;
-    float tauDn = sigma0 * d * max(h, 0.0) * H * 0.35;
-    // powder: dark edges when looking away from the light
-    float powder = 1.0 - 0.6 * exp(-sig * 90.0);
-    vec3 src = skCloudKey * (phase * Tkey * mix(1.0, powder, 0.5 - 0.5 * cosT))
-             + amb * (0.2 + 0.8 * exp(-tauUp))
-             + gnd * exp(-tauDn);
-    float a = 1.0 - exp(-sig * dt);
+    // path length represented by this plane (oblique rays cross more cloud per plane, capped)
+    vec3 up = normalize(p + vec3(0.0, SK_R, 0.0));
+    float mu = max(abs(dot(rd, up)), 0.02);
+    float seg = min(dh / mu, 1200.0 + 800.0 * lod);
+    float sig = dens * sigma0 * thick;
+    float a = 1.0 - exp(-sig * seg);
+    float toTop = max(top - hf, 0.0) * H;
+    float sd = sigma0 * d * thick;
+    float tauKey = sd * toTop / keyMu * 0.8;
+    float tauUp = sd * toTop * 0.45;
+    float tauDn = sd * hf * H * 0.45;
+    // single scattering (phase) + multiple scattering (isotropic, softer extinction) + ambient + bounce
+    float Tss = exp(-tauKey);
+    float Tms = exp(-tauKey * 0.08) * 0.85 + 0.15 * exp(-tauKey * 0.02);
+    float powder = mix(1.0, 1.0 - exp(-sig * 160.0), 0.35 * (0.5 - 0.5 * cosT));
+    vec3 src = skCloudKey * (phase * Tss * 2.0 + Tms * (0.95 / PI) * (0.35 + 0.65 * keyMu)) * powder
+             + amb * (0.35 + 0.65 * exp(-tauUp))
+             + gnd * (0.4 + 0.6 * exp(-tauDn));
     Lsum += T * a * src;
     tw += T * a * t;
     ws += T * a;
@@ -341,16 +348,16 @@ vec4 skCirrus(const vec3 ro, const vec3 rd, out float tc) {
   tc = skShellHit(ro, rd, skCloudP2.x);
   if (tc <= 0.0) { tc = 1e9; return vec4(0.0); }
   vec3 pc = ro + rd * tc;
-  vec2 uv = skCloudUv(pc.xz * 0.6);
-  float g = texture(skCloudTex, SK_ROT * uv * 0.8 + 0.5).g;
-  float mask = texture(skCloudTex, uv * 0.23 + 0.11).a;
-  float d = saturate((g - (1.0 - skCloudP2.y * 1.1)) / 0.3) * smoothstep(0.15, 0.6, mask + skCloudP2.y * 0.4);
+  vec2 uv = skCloudUv(pc.xz * 0.22);
+  float g = texture(skCloudTex, SK_ROT * uv * 0.9 + 0.5).g * 0.75 + texture(skCloudTex, uv * 2.7 + 0.31).g * 0.25;
+  float mask = texture(skCloudTex, uv * 0.35 + 0.11).a;
+  float d = smoothstep(1.0 - skCloudP2.y * 1.2, 1.0 - skCloudP2.y * 1.2 + 0.45, g) * smoothstep(0.25, 0.75, mask + skCloudP2.y * 0.3);
   if (d <= 0.0) return vec4(0.0);
   vec3 up = normalize(pc + vec3(0.0, SK_R, 0.0));
   float mu = max(abs(dot(rd, up)), 0.06);
-  float a = 1.0 - exp(-d * 0.3 / mu);
+  float a = 1.0 - exp(-d * 0.22 / mu);
   float cosT = dot(rd, skCloudKeyDirW);
-  vec3 L = skCloudKey * (skHG(cosT, 0.7) * 1.4 + 0.1) + skCloudAmb * (0.35 / PI);
+  vec3 L = skCloudKey * (skHG(cosT, 0.7) * 1.2 + 0.22) + skCloudAmb * (0.5 / PI);
   return vec4(L * a, a);
 }
 
@@ -451,8 +458,29 @@ uniform sampler3D skApLut;
 uniform sampler2D skCloudBuf;    // premultiplied cloud radiance (app units, AP applied) + alpha
 uniform sampler2D skCloudDist;   // r: cloud distance (km)
 uniform float skGroundAlt;       // altitude of the fake distant ground (m ASL)
+uniform vec2 skCloudTexel;       // 1 / cloud buffer size
 
 varying vec3 vSkRayW;
+
+// 4-tap cubic B-spline upsampling (smooth edges from the low-res cloud buffer)
+vec4 skCubic(const sampler2D tex, const vec2 uv) {
+  vec2 ts = 1.0 / skCloudTexel;
+  vec2 st = uv * ts - 0.5;
+  vec2 i = floor(st);
+  vec2 f = st - i;
+  vec2 f2 = f * f;
+  vec2 f3 = f2 * f;
+  vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+  vec2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+  vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+  vec2 w3 = f3 / 6.0;
+  vec2 s0 = w0 + w1;
+  vec2 s1 = w2 + w3;
+  vec2 c0 = (i - 0.5 + w1 / s0) * skCloudTexel;
+  vec2 c1 = (i + 1.5 + w3 / s1) * skCloudTexel;
+  return (texture(tex, vec2(c0.x, c0.y)) * s0.x + texture(tex, vec2(c1.x, c0.y)) * s1.x) * s0.y
+       + (texture(tex, vec2(c0.x, c1.y)) * s0.x + texture(tex, vec2(c1.x, c1.y)) * s1.x) * s1.y;
+}
 
 void mainImage(const vec4 inputColor, const vec2 uv, out vec4 outputColor) {
   vec3 rdW = normalize(vSkRayW);
@@ -496,8 +524,9 @@ void mainImage(const vec4 inputColor, const vec2 uv, out vec4 outputColor) {
     col = inputColor.rgb * T + Sin + night * (1.0 - dot(T, vec3(0.3333)));
   }
   if (skCloudsOn > 0.5) {
-    vec4 cb = texture(skCloudBuf, uv);
-    float cd = texture(skCloudDist, uv).r * 1000.0;
+    vec4 cb = skCubic(skCloudBuf, uv);
+    vec4 cdv = texture(skCloudDist, uv);
+    float cd = cdv.r / max(cdv.a, 1e-4) * 1000.0;
     if (cb.a > 0.0005 && cd < dist) col = col * (1.0 - cb.a) + cb.rgb;
   }
   col = skApplyFog(col, rdW, sky ? min(dist, 1e9) : dist);
@@ -560,6 +589,8 @@ uniform mat4 skInvView;
 uniform mat4 skInvProj;
 uniform vec2 uSize;
 uniform sampler3D skApLut;
+uniform float uSub;       // sub-sample index
+uniform float uSubCount;  // number of sub-samples accumulated (additive blending)
 layout(location = 1) out highp vec4 skDistOut;
 void main() {
   vec2 uv = gl_FragCoord.xy / uSize;
@@ -567,7 +598,7 @@ void main() {
   vp /= vp.w;
   vec3 rdW = normalize((skInvView * vec4(vp.xyz, 0.0)).xyz);
   float S = skRadianceScale;
-  float jitter = skIGN(gl_FragCoord.xy);
+  float jitter = fract((uSub + skIGN(gl_FragCoord.xy)) / uSubCount + 0.37 * uSub);
   float tCu;
   vec4 cu = skMarchCumulus(skCamWorld, rdW, jitter, tCu);
   float tCi;
@@ -591,8 +622,10 @@ void main() {
     a = cu.a + a * (1.0 - cu.a);
     dist = min(dist, tCu);
   }
-  gl_FragColor = vec4(col, a);
-  skDistOut = vec4(dist * 0.001, 0.0, 0.0, 1.0);
+  float w = 1.0 / uSubCount;
+  gl_FragColor = vec4(col, a) * w;
+  // km, kept inside half-float range (no-cloud texels must stay finite for bilinear filtering)
+  skDistOut = vec4(min(dist, 6.0e7) * 0.001 * w, 0.0, 0.0, w);
 }
 `);
 

@@ -9,12 +9,12 @@
 // roofs: (metres along the eave, metres up the slope); flat roofs: tile-local (x, z).
 import earcut from 'earcut';
 import {
-  type BuildingData, REC_SIZE, R, FLAG, Typ, Roof, Wall, RoofMat, decodeRings, decodeParts, type RoofPart,
+  type BuildingData, REC_SIZE, R, FLAG, Typ, Roof, Wall, RoofMat, decodeRings, decodeParts, type RoofPart, FENCE_SIZE,
 } from './format';
 
 export const K = {
   Wall: 0, RoofPitched: 1, RoofFlat: 2, Plain: 3, BalconyFront: 4, Slab: 5, Glazing: 6, Metal: 7,
-  Soffit: 8, Lamp: 9, Door: 10,
+  Soffit: 8, Lamp: 9, Door: 10, Fence: 11,
 } as const;
 
 /** Wall flag bits (aW.w low byte). */
@@ -23,15 +23,20 @@ export const WF = { Entrance: 1, Shop: 2, Gable: 4, Balcony: 8, Hole: 16, Parape
 export interface TileMesh {
   position: Float32Array; normal: Float32Array; uv: Float32Array;
   aA: Uint8Array; aC: Uint8Array; aW: Uint16Array; index: Uint32Array;
+  /** linear albedo approximation (u8 normalised) for the path tracer / proxy materials */
+  color: Uint8Array;
   bbox: [number, number, number, number, number, number];
   tris: number;
 }
+
+/** sRGB byte -> linear byte */
+const LIN = new Uint8Array(256).map((_, i) => Math.round(Math.pow(i / 255, 2.2) * 255));
 
 // ------------------------------------------------------------------ growable buffers
 class Buf {
   n = 0; // vertex count
   pos: Float32Array; nor: Float32Array; uv: Float32Array;
-  a: Uint8Array; c: Uint8Array; w: Uint16Array;
+  a: Uint8Array; c: Uint8Array; w: Uint16Array; col: Uint8Array;
   idx: Uint32Array; ni = 0;
   cap: number; icap: number;
   // current attribute state
@@ -44,6 +49,7 @@ class Buf {
     this.cap = cap; this.icap = cap * 2;
     this.pos = new Float32Array(cap * 3); this.nor = new Float32Array(cap * 3); this.uv = new Float32Array(cap * 2);
     this.a = new Uint8Array(cap * 4); this.c = new Uint8Array(cap * 4); this.w = new Uint16Array(cap * 4);
+    this.col = new Uint8Array(cap * 3);
     this.idx = new Uint32Array(this.icap);
   }
 
@@ -55,7 +61,7 @@ class Buf {
         const b = new (a.constructor as any)(c * k) as T; b.set(a); return b;
       };
       this.pos = g(this.pos, 3); this.nor = g(this.nor, 3); this.uv = g(this.uv, 2);
-      this.a = g(this.a, 4); this.c = g(this.c, 4); this.w = g(this.w, 4);
+      this.a = g(this.a, 4); this.c = g(this.c, 4); this.w = g(this.w, 4); this.col = g(this.col, 3);
       this.cap = c;
     }
     if (this.ni + ni > this.icap) {
@@ -74,6 +80,9 @@ class Buf {
     this.a[a] = this.kind; this.a[a + 1] = this.style; this.a[a + 2] = this.seed; this.a[a + 3] = this.levels;
     this.c[a] = this.cr; this.c[a + 1] = this.cg; this.c[a + 2] = this.cb; this.c[a + 3] = this.aux;
     this.w[a] = this.w0; this.w[a + 1] = this.w1; this.w[a + 2] = this.w2; this.w[a + 3] = this.w3;
+    // approximate linear albedo: walls are darkened by their windows, glass is dark
+    const k = this.kind === 0 ? 0.78 : this.kind === 6 ? 0.25 : 1.0;
+    this.col[3 * i] = LIN[this.cr] * k; this.col[3 * i + 1] = LIN[this.cg] * k; this.col[3 * i + 2] = LIN[this.cb] * k;
     if (x < this.minX) this.minX = x; if (x > this.maxX) this.maxX = x;
     if (y < this.minY) this.minY = y; if (y > this.maxY) this.maxY = y;
     if (z < this.minZ) this.minZ = z; if (z > this.maxZ) this.maxZ = z;
@@ -138,6 +147,7 @@ class Buf {
     return {
       position: this.pos.slice(0, n * 3), normal: this.nor.slice(0, n * 3), uv: this.uv.slice(0, n * 2),
       aA: this.a.slice(0, n * 4), aC: this.c.slice(0, n * 4), aW: this.w.slice(0, n * 4),
+      color: this.col.slice(0, n * 3),
       index: this.idx.slice(0, ni),
       bbox: n ? [this.minX, this.minY, this.minZ, this.maxX, this.maxY, this.maxZ] : [0, 0, 0, 0, 0, 0],
       tris: ni / 3,
@@ -222,24 +232,87 @@ interface Ctx {
   det: Buf | null; // detail geometry (near LOD only)
 }
 
-export function buildTile(d: BuildingData, tile: number, ground: Float32Array, hidden: Uint8Array, detail: boolean): { base: TileMesh; det: TileMesh | null; count: number } {
-  const tx = tile % d.tilesX, tz = Math.floor(tile / d.tilesX);
-  const ox = d.originX + (tx + 0.5) * d.tileSize;
-  const oz = d.originZ + (tz + 0.5) * d.tileSize;
+/**
+ * Build the merged mesh for one or more data tiles, relative to (ox, oz).
+ * detail=false: base mesh only (walls + roofs); detail=true: also the near-LOD detail mesh.
+ */
+export function buildTiles(d: BuildingData, tiles: number[], ox: number, oz: number, ground: Float32Array, hidden: Uint8Array, detail: boolean, fground?: Float32Array | null): { base: TileMesh; det: TileMesh | null; count: number } {
   const c: Ctx = { d, ox, oz, base: new Buf(8192), det: detail ? new Buf(8192) : null };
-  const s = d.tileStart[tile], e = d.tileStart[tile + 1];
   let count = 0;
-  for (let i = s; i < e; i++) {
-    if (hidden[i]) continue;
-    try {
-      building(c, i, ground[2 * i], ground[2 * i + 1]);
-      count++;
-    } catch (err) {
-      // never let one bad footprint break a tile
-      if (count < 3) console.warn('[buildings] mesh failed for', i, err);
+  for (const tile of tiles) {
+    if (c.det && fground && d.nFences) {
+      try { fences(c.det, d, tile, ox, oz, fground); } catch (err) { console.warn('[buildings] fences failed', tile, err); }
+    }
+    const s = d.tileStart[tile], e = d.tileStart[tile + 1];
+    for (let i = s; i < e; i++) {
+      if (hidden[i]) continue;
+      try {
+        building(c, i, ground[2 * i], ground[2 * i + 1]);
+        count++;
+      } catch (err) {
+        // never let one bad footprint break a tile
+        if (count < 3) console.warn('[buildings] mesh failed for', i, err);
+      }
     }
   }
   return { base: c.base.result(), det: c.det ? c.det.result() : null, count };
+}
+
+export function buildTile(d: BuildingData, tile: number, ground: Float32Array, hidden: Uint8Array, detail: boolean, fground?: Float32Array | null): { base: TileMesh; det: TileMesh | null; count: number } {
+  const tx = tile % d.tilesX, tz = Math.floor(tile / d.tilesX);
+  return buildTiles(d, [tile], d.originX + (tx + 0.5) * d.tileSize, d.originZ + (tz + 0.5) * d.tileSize, ground, hidden, detail, fground);
+}
+
+/** World-space endpoints of fence f (x0, z0, x1, z1). */
+export function fenceEnds(d: BuildingData, f: number, tile: number): [number, number, number, number] {
+  const o = d.fenceOff + f * FENCE_SIZE;
+  const tx = tile % d.tilesX, tz = Math.floor(tile / d.tilesX);
+  const cx = d.originX + (tx + 0.5) * d.tileSize, cz = d.originZ + (tz + 0.5) * d.tileSize;
+  const dv = d.dv;
+  return [cx + dv.getInt16(o, true) * 0.01, cz + dv.getInt16(o + 2, true) * 0.01, cx + dv.getInt16(o + 4, true) * 0.01, cz + dv.getInt16(o + 6, true) * 0.01];
+}
+
+/** Plot fences of one data tile (near LOD only). fground: [h0, h1] per fence. */
+function fences(b: Buf, d: BuildingData, tile: number, ox: number, oz: number, fground: Float32Array): void {
+  const s = d.fenceStart[tile], e = d.fenceStart[tile + 1];
+  const dv = d.dv;
+  for (let f = s; f < e; f++) {
+    const o = d.fenceOff + f * FENCE_SIZE;
+    const [wx0, wz0, wx1, wz1] = fenceEnds(d, f, tile);
+    const x0 = wx0 - ox, z0 = wz0 - oz, x1 = wx1 - ox, z1 = wz1 - oz;
+    const type = dv.getUint8(o + 8);
+    const h = dv.getUint8(o + 9) / 10;
+    const r = dv.getUint8(o + 10), g = dv.getUint8(o + 11), bl = dv.getUint8(o + 12);
+    const seed = dv.getUint8(o + 13);
+    const g0 = fground[2 * f], g1 = fground[2 * f + 1];
+    const dx = x1 - x0, dz = z1 - z0;
+    const L = Math.hypot(dx, dz);
+    if (L < 0.3) continue;
+    const tx = dx / L, tz = dz / L;
+    const nx = -tz, nz = tx;
+    const clear = type === 1 ? 0.25 : 0.05; // brick plinth / gap above ground
+    b.kind = K.Fence; b.style = type; b.seed = seed; b.levels = 0;
+    b.cr = r; b.cg = g; b.cb = bl; b.aux = seed;
+    b.w0 = Math.round(L * 100); b.w1 = 0; b.w2 = 0; b.w3 = 0;
+    const yb0 = g0 - 0.25, yb1 = g1 - 0.25, yt0 = g0 + h, yt1 = g1 + h;
+    // both faces (fences are seen from the street and from the yard)
+    b.quad([x0, yb0, z0, x1, yb1, z1, x1, yt1, z1, x0, yt0, z0], [nx, 0, nz], [0, -0.25, L, -0.25, L, h, 0, h]);
+    b.quad([x1, yb1, z1, x0, yb0, z0, x0, yt0, z0, x1, yt1, z1], [-nx, 0, -nz], [L, -0.25, 0, -0.25, 0, h, L, h]);
+    if (type === 1) {
+      // brick pillar at the start + low brick plinth
+      b.kind = K.Wall; b.style = Wall.HouseBrick; b.cr = 150; b.cg = 76; b.cb = 54; b.aux = 0;
+      b.w0 = 40; b.w1 = 300; b.w2 = 0; b.w3 = WF.Parapet;
+      b.box(x0, g0 + (h + 0.2) / 2 - 0.1, z0, tx, tz, 0.2, (h + 0.2) / 2 + 0.1, 0.2, 1);
+      b.kind = K.Metal; b.cr = 90; b.cg = 90; b.cb = 90; b.aux = 0;
+      b.box(x0, g0 + h + 0.15, z0, tx, tz, 0.24, 0.03, 0.24);
+      b.kind = K.Wall; b.style = Wall.HouseBrick; b.cr = 150; b.cg = 76; b.cb = 54; b.w0 = Math.round(L * 100); b.w3 = WF.Parapet;
+      b.box((x0 + x1) / 2, (g0 + g1) / 2 + clear / 2 - 0.1, (z0 + z1) / 2, tx, tz, L / 2, clear / 2 + 0.1, 0.1, 1, true, 1 | 2 | 16);
+    } else {
+      // steel posts
+      b.kind = K.Metal; b.cr = 60; b.cg = 60; b.cb = 60; b.aux = 0;
+      b.box(x0 + nx * 0.04, g0 + h / 2, z0 + nz * 0.04, tx, tz, 0.03, h / 2 + 0.05, 0.03, 1, true, 1 | 2 | 4 | 8);
+    }
+  }
 }
 
 /** Floor base (ground floor level) for a building given ground range under it. */
@@ -672,6 +745,18 @@ function facadeDetails(b: Buf, bi: number, walls: Array<any>, fb: number, top: n
           b.kind = K.Metal; b.cr = 232; b.cg = 232; b.cb = 228; b.aux = 1;
           b.box(x + nx * 0.2, y, z + nz * 0.2, tx, tz, 0.4, 0.28, 0.16);
         }
+        // satellite dishes (Tricolor TV) on a few balconies / window piers
+        for (let row = 1; row < Math.min(levels, 16); row++) {
+          if (!isApt(typ) || hash(bi * 71 + col * 5 + wi, row * 31 + 9) > 0.045) continue;
+          const u = colU(col) + (w.cellW * 0.5 - 0.35) * (hash(col, row * 3 + bi) < 0.5 ? -1 : 1);
+          if (u < 0.5 || u > w.L - 0.5) continue;
+          const x = w.ax + tx * u, z = w.az + tz * u;
+          const y = fb + row * floorH + 1.6;
+          b.kind = K.Metal; b.cr = 218; b.cg = 218; b.cb = 214; b.aux = 0;
+          b.box(x + nx * 0.42, y, z + nz * 0.42, tx, tz, 0.27, 0.25, 0.04);
+          b.cr = 90; b.cg = 90; b.cb = 90;
+          b.box(x + nx * 0.2, y - 0.05, z + nz * 0.2, tx, tz, 0.02, 0.02, 0.2, 1, true, 1 | 2 | 16);
+        }
       }
     }
     // --- shop signage over ground-floor shops
@@ -723,6 +808,21 @@ function roofEquipment(b: Buf, bi: number, rings: Float64Array[], walls: Array<a
       b.box(x, top + 1.5, z, tx, tz, 2.6, 1.5, 1.9, 1);
       b.kind = K.RoofFlat; b.style = RoofMat.Bitumen; b.cr = 70; b.cg = 70; b.cb = 70;
       b.box(x, top + 3.05, z, tx, tz, 2.7, 0.05, 2.0);
+    }
+  }
+  if ((typ === Typ.Industrial || typ === Typ.Warehouse) && best.L > 30 && depth > 18) {
+    // roof monitors (clerestory lanterns) along the hall axis
+    const nMon = Math.max(1, Math.min(4, Math.floor(depth / 22)));
+    const mw = Math.min(6, depth * 0.25) / 2;
+    const ml = best.L * 0.4;
+    const mh = 1.8;
+    for (let m = 0; m < nMon; m++) {
+      const v = (m + 0.5) / nMon * depth - depth / 2;
+      const x = axisX + inX * v, z = axisZ + inZ * v;
+      b.kind = K.Glazing; b.cr = 255; b.cg = 255; b.cb = 255; b.aux = 3;
+      b.box(x, top + mh / 2, z, tx, tz, ml, mh / 2, mw, 1, true, 1 | 2 | 4 | 8);
+      b.kind = K.RoofFlat; b.style = RoofMat.Bitumen; b.cr = 82; b.cg = 82; b.cb = 84; b.aux = typ;
+      b.box(x, top + mh + 0.08, z, tx, tz, ml + 0.3, 0.08, mw + 0.3, 1, false);
     }
   }
   if (apt || typ === Typ.School || typ === Typ.Public || typ === Typ.Kindergarten || typ === Typ.Commercial || typ === Typ.Mall || typ === Typ.Industrial) {

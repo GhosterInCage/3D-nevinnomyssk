@@ -89,7 +89,7 @@ def furniture(rlines, segs, polys, junctions, graph, marks, bld_tree, bld_geoms,
         grid[(int(q[0] // 10), int(q[1] // 10))].append(len(lights) - 1)
         return len(lights) - 1
 
-    prio = {"trunk": 0, "motorway": 0, "primary": 0, "secondary": 1, "tertiary": 2, "residential": 3, "unclassified": 3, "living_street": 3}
+    prio = {"trunk": 0, "motorway": 0, "primary": 0, "secondary": 1, "tertiary": 2, "residential": 3, "unclassified": 3, "living_street": 3, "service": 4}
     road = [r for r in rlines if r["kind"] == "road" and r["cls"] in prio]
     road.sort(key=lambda r: prio[r["cls"]])
     nchain = 0
@@ -125,6 +125,9 @@ def furniture(rlines, segs, polys, junctions, graph, marks, bld_tree, bld_geoms,
                 mode = ("one", 36.0, 1, hw + (gap * 0.5 if gap >= 1 else 0.7))
             elif zone == Z_PRIVATE:
                 mode = ("chain", 38.0, 2, hw + 1.6)
+        elif cls == "service":
+            if zone == Z_APART and r["sub"] not in ("driveway", "parking_aisle") and L > 60:
+                mode = ("one", 42.0, 1, hw + 0.8)
         else:
             if zone in (Z_APART,):
                 mode = ("one", 38.0, 1, hw + 0.7)

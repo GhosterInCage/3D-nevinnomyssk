@@ -2,7 +2,7 @@
 
   public/data/manifest.json          origin / projection / region description
   public/data/terrain/height.bin.gz  uint16 LE heightmap, HEIGHT_N x HEIGHT_N, row 0 = north edge
-                                     height_m = hMin + value * hScale   (2 cm steps)
+                                     height_m = hMin + value * hScale   (4 cm steps)
   public/data/terrain/ortho.jpg      2048x2048 Sentinel-2 summer composite, sRGB-encoded linear
                                      surface reflectance * orthoGain (row 0 = north edge)
   public/data/terrain/landcover.png  2048x2048 8-bit ESA WorldCover class codes (row 0 = north)
@@ -22,7 +22,7 @@ from PIL import Image
 from config import *
 
 OUT = os.path.join(WEB_DATA, "terrain")
-H_MIN, H_SCALE = 200.0, 0.02
+H_MIN, H_SCALE = 200.0, 0.04
 ORTHO_GAIN = 1.0
 
 

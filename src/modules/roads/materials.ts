@@ -18,7 +18,7 @@ export const S = {
 
 /** Height of each ground surface above the terrain (m). */
 export const ELEV: Record<number, number> = {
-  0: 0.05, 1: 0.05, 2: 0.05, 3: 0.04, 4: 0.03, 5: 0.18, 6: 0.18, 7: 0.35, 8: 0.9, 9: 0.05, 10: 0.05, 11: 0.18, 12: 0,
+  0: 0.085, 1: 0.085, 2: 0.085, 3: 0.075, 4: 0.07, 5: 0.22, 6: 0.22, 7: 0.38, 8: 0.95, 9: 0.085, 10: 0.085, 11: 0.22, 12: 0,
 };
 
 export interface SharedUniforms {
@@ -35,6 +35,8 @@ export interface SharedUniforms {
   rsLampI: THREE.IUniform<number>;
   rsCam: THREE.IUniform<THREE.Vector3>;
   rsDash: THREE.IUniform<THREE.Vector4[]>;
+  /** lamps currently rendered as real spot lights: (x, z, weight, 0); their lamp-map light is scaled by 1-weight */
+  rsReal: THREE.IUniform<THREE.Vector4[]>;
 }
 
 export function makeSharedUniforms(): SharedUniforms {
@@ -53,9 +55,10 @@ export function makeSharedUniforms(): SharedUniforms {
     rsNight: { value: 0 },
     rsWet: { value: 0 },
     rsTime: { value: 0 },
-    rsLampI: { value: 55 },
+    rsLampI: { value: 70 },
     rsCam: { value: new THREE.Vector3() },
     rsDash: { value: dash },
+    rsReal: { value: Array.from({ length: 8 }, () => new THREE.Vector4(1e9, 1e9, 0, 0)) },
   };
 }
 
@@ -84,11 +87,14 @@ rsDir = aDir;
 {
   // pull towards the camera by a depth-precision dependent amount: draped layers never z-fight with
   // the terrain (whose far LODs may deviate from the exact height field) and never visibly float.
-  float rsD = max(-mvPosition.z, 0.001);
-  float rsNear = projectionMatrix[3][2] / (projectionMatrix[2][2] - 1.0);
-  float rsPull = rsPullP.x + rsPullP.y * rsD + rsPullP.z * rsD * rsD / max(rsNear, 0.05);
-  mvPosition.xyz *= max(0.0, 1.0 - rsPull / rsD);
-  gl_Position = projectionMatrix * mvPosition;
+  float rsD = -mvPosition.z;
+  if (rsD > 0.05) {
+    float rsNear = projectionMatrix[3][2] / (projectionMatrix[2][2] - 1.0);
+    float rsPull = rsPullP.x + rsPullP.y * rsD + rsPullP.z * rsD * rsD / max(rsNear, 0.05);
+    // never pull closer than half the distance (keeps triangles near / behind the camera intact)
+    mvPosition.xyz *= max(0.5, 1.0 - rsPull / rsD);
+    gl_Position = projectionMatrix * mvPosition;
+  }
 }
 `;
 
@@ -106,6 +112,7 @@ uniform float rsTime;
 uniform float rsLampI;
 uniform vec3 rsCam;
 uniform vec4 rsDash[8];
+uniform vec4 rsReal[8];
 varying vec3 rsW;
 varying vec3 rsNW;
 flat varying float rsSurf;
@@ -200,25 +207,46 @@ void rsSurface() {
   bool asph = (s == 0 || s == 1 || s == 6 || s == 9);
   if (asph) {
     float old = (s == 1 || s == 9) ? 1.0 : 0.0;
-    if (s == 6) old = 0.6;
+    if (s == 6) old = 0.5;
     // oxidised bitumen: new asphalt is near-black, old goes to blue-grey
-    float ox = old * (0.7 + 0.6 * macro.r) + (1.0 - old) * 0.25 * macro.g;
-    alb *= mix(0.95, 1.9, ox);
+    float ox = old * (0.55 + 0.6 * macro.r) + (1.0 - old) * 0.25 * macro.g;
+    alb *= mix(0.72, 1.3, ox);
+    if (s == 6) alb *= 1.25;
     alb *= vec3(0.98, 0.99, 1.02 + 0.03 * ox);
     alb *= 0.88 + 0.24 * mid.r;
-    // patches of fresher (darker) asphalt with sealed seams
-    float pn = texture(rsNoise, xz * 0.047 + vec2(0.61, 0.13)).b;
-    float thr = 0.74 - 0.08 * old;
-    float patchm = smoothstep(thr, thr + 0.01, pn) * (0.3 + 0.7 * old);
-    float seam = (smoothstep(thr - 0.012, thr, pn) - smoothstep(thr + 0.004, thr + 0.014, pn)) * (0.3 + 0.7 * old);
-    alb = mix(alb, alb * 0.55, patchm);
-    rough = mix(rough, rough * 0.92, patchm);
-    alb *= 1.0 - 0.55 * seam;
+    // road-aligned rectangular repair patches (cut & refill), fresher = darker, with tar-sealed seams
+    float patchm = 0.0, seam = 0.0, ptone = 0.0;
+    {
+      float th = 0.5 * atan(rsDir.y, rsDir.x + 1e-5);
+      vec2 T = vec2(cos(th), sin(th));
+      vec2 Bn = vec2(-T.y, T.x);
+      const float CS = 7.0;
+      vec2 f = fract(xz / CS);
+      vec2 base = floor(xz / CS) - vec2(f.x < 0.5 ? 1.0 : 0.0, f.y < 0.5 ? 1.0 : 0.0);
+      float prob = mix(0.06, 0.34, old) * (0.5 + macro.b);
+      for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+          vec2 cid = base + vec2(float(i), float(j));
+          if (rsHash(cid) > prob) continue;
+          vec2 c = (cid + vec2(rsHash(cid + 1.7), rsHash(cid + 3.1))) * CS;
+          vec2 hs = vec2(0.5 + 2.6 * rsHash(cid + 5.3), 0.4 + 1.3 * rsHash(cid + 7.9));
+          vec2 d = xz - c;
+          vec2 q = abs(vec2(dot(d, T), dot(d, Bn))) - hs;
+          float e = max(q.x, q.y);
+          float inside = 1.0 - smoothstep(-0.015, 0.015, e);
+          if (inside > patchm) { patchm = inside; ptone = rsHash(cid + 9.4); }
+          seam = max(seam, 1.0 - smoothstep(0.0, 0.035, abs(e)));
+        }
+      }
+    }
+    alb = mix(alb, alb * mix(0.5, 0.85, ptone), patchm);
+    rough = mix(rough, rough * 0.9, patchm);
+    alb *= 1.0 - 0.6 * seam;
     // crack network (tar-sealed or open)
-    float cmask = smoothstep(0.45, 0.75, texture(rsNoise, xz * 0.013 + 0.71).g + 0.25 * old - 0.1) * (1.0 - patchm);
+    float cmask = smoothstep(0.5, 0.72, texture(rsNoise, xz * 0.011 + 0.71).r * 0.8 + 0.2 * mid.b + 0.18 * old - 0.12) * (1.0 - patchm);
     float cr = texture(rsNoise, xz * 0.083).g;
     float cr2 = texture(rsNoise, xz * 0.19 + 0.5).g;
-    float crack = max(smoothstep(0.55, 0.9, cr), smoothstep(0.6, 0.95, cr2) * old) * cmask * (0.35 + 0.65 * old);
+    float crack = max(smoothstep(0.55, 0.9, cr), smoothstep(0.6, 0.95, cr2) * old) * cmask * (0.12 + 0.88 * old);
     alb *= 1.0 - 0.6 * crack;
     rough = mix(rough, 0.6, crack * 0.5);
     // potholes on very old roads (away from junctions)
@@ -265,11 +293,12 @@ void rsSurface() {
     alb = mix(alb, mix(alb, vec3(0.30, 0.29, 0.27), 0.55 * sleep), far);
     float railL = 1.0 - smoothstep(0.03, 0.09, abs(alat - 0.76));
     alb = mix(alb, vec3(0.08, 0.06, 0.05), railL * far * 0.8);
-    // rust between the rails
-    alb = mix(alb, alb * vec3(1.15, 0.9, 0.75), (1.0 - smoothstep(0.6, 0.9, alat)) * 0.6);
-    alb *= 0.85 + 0.3 * mid.b;
+    // rust between the rails, dirt/oil darkening, less pink
+    alb = mix(alb, vec3(dot(alb, vec3(0.333))), 0.35) * vec3(1.02, 0.98, 0.93);
+    alb = mix(alb, alb * vec3(1.1, 0.88, 0.72), (1.0 - smoothstep(0.6, 0.9, alat)) * 0.6);
+    alb *= (0.62 + 0.25 * mid.b) * (1.0 - 0.25 * (1.0 - smoothstep(0.0, 1.4, alat)));
   } else if (s == 8 || s == 12 || s == 11) {
-    alb *= 0.85 + 0.2 * mid.r;
+    alb *= (s == 11 ? 1.25 : 1.0) * (0.85 + 0.2 * mid.r);
     alb = mix(alb, alb * vec3(0.8, 0.8, 0.78), smoothstep(0.55, 0.85, macro.g) * 0.6);
   }
 
@@ -279,11 +308,11 @@ void rsSurface() {
     float lw = 2.0 * hw / lanes;
     float u = (lat + hw) / lw;
     float lx = (fract(u) - 0.5) * lw;
-    float wt = exp(-pow((abs(lx) - 0.85) / 0.3, 2.0)) * wear;
+    float wt = exp(-pow((abs(lx) - 0.85) / 0.36, 2.0)) * wear;
     float oil = exp(-pow(lx / 0.35, 2.0)) * wear * smoothstep(0.35, 0.75, mid.b);
     if (s <= 1) {
-      alb *= 1.0 - 0.14 * wt;
-      rough = mix(rough, rough * 0.78, wt);
+      alb *= 1.0 - (s == 0 ? 0.2 : 0.12) * wt;
+      rough = mix(rough, rough * 0.72, wt);
       alb *= 1.0 - 0.3 * oil;
       rut = max(rut, wt * (s == 1 ? 1.0 : 0.4));
     } else if (s == 3 || s == 4) {
@@ -293,6 +322,39 @@ void rsSurface() {
       if (lanes < 1.5 && s == 4) {
         float grassC = (1.0 - smoothstep(0.25, 0.6, alat)) * smoothstep(0.35, 0.6, mid.r);
         alb = mix(alb, vec3(0.10, 0.13, 0.05), grassC * 0.8);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- manhole covers + storm-drain grates
+  if ((s <= 2 || s == 10) && dist < 180.0 && hw > 2.0) {
+    vec2 cid = floor(xz / 23.0);
+    if (rsHash(cid + 11.3) < 0.5) {
+      vec2 c = (cid + 0.2 + 0.6 * vec2(rsHash(cid + 2.2), rsHash(cid + 4.4))) * 23.0;
+      vec2 d = xz - c;
+      float r = length(d);
+      if (r < 0.45 && alat < hw - 0.9) {
+        float disc = 1.0 - smoothstep(0.31, 0.33, r);
+        float frame = (1.0 - smoothstep(0.40, 0.44, r)) - disc;
+        float pat = step(0.55, fract((d.x + d.y) * 7.0)) + step(0.55, fract((d.x - d.y) * 7.0));
+        alb = mix(alb, vec3(0.05, 0.045, 0.04) * (0.8 + 0.35 * pat), disc);
+        alb = mix(alb, vec3(0.09, 0.085, 0.08), frame);
+        rough = mix(rough, 0.35 + 0.2 * pat, disc);
+        nd += vec2(0.25 * pat - 0.2) * disc;
+        rut = max(rut, frame * 0.6);
+      }
+    }
+    if (hw > 2.5 && alat > hw - 0.55 && alat < hw - 0.05) {
+      float th = 0.5 * atan(rsDir.y, rsDir.x + 1e-5);
+      vec2 T = vec2(cos(th), sin(th));
+      float al = dot(xz, T);
+      float k = floor(al / 38.0);
+      float u = al - (k + 0.5) * 38.0;
+      if (abs(u) < 0.45 && rsHash(vec2(k, floor(lat))) < 0.8) {
+        float slots = step(0.45, fract(u * 12.0));
+        alb = mix(alb, vec3(0.03) + 0.07 * slots, 0.9);
+        rough = 0.5;
+        rut = 1.0;
       }
     }
   }
@@ -357,7 +419,12 @@ void rsLamps(inout ReflectedLight reflectedLight, const in vec3 geometryPosition
     float d2 = dot(L, L);
     vec3 Ld = L * inversesqrt(d2);
     float cosE = Ld.y;
-    float I = rsLampI * rsNight * (0.35 + 0.65 * cosE) * smoothstep(0.1, 0.32, cosE);
+    float I = rsLampI * rsNight * (0.25 + 0.75 * cosE * cosE) * smoothstep(0.28, 0.55, cosE);
+    vec2 lp = cc + off;
+    for (int r = 0; r < 8; r++) {
+      vec2 dd = rsReal[r].xy - lp;
+      if (dot(dd, dd) < 0.5) I *= 1.0 - rsReal[r].z;
+    }
     IncidentLight dl;
     dl.color = (typ > 0.5 ? rsLampCol1 : rsLampCol0) * (I / d2);
     dl.direction = normalize((viewMatrix * vec4(Ld, 0.0)).xyz);

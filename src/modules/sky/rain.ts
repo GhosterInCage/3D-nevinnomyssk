@@ -3,7 +3,6 @@
 // sky ambient; fades with distance. The wet-look signal is ctx.env.rain.
 import * as THREE from 'three';
 import type { AppContext } from '../../core/context';
-import type { SkyLighting } from './lighting';
 
 const vert = /* glsl */ `
 uniform vec3 uCam;
@@ -31,8 +30,8 @@ void main() {
   vec3 p = wp + side * position.x * uWidth * (1.0 + dist * 0.015) - vdir * position.y * len;
   vU = position.x * 2.0;
   // hide drops that are too close (huge) or far; only a fraction active for light rain
-  float active = step(seed.y * 0.999, uAmount * 1.1);
-  vAlpha = active * smoothstep(0.6, 2.5, dist) * (1.0 - smoothstep(uBox.x * 0.32, uBox.x * 0.5, dist));
+  float isOn = step(seed.y * 0.999, uAmount * 1.1);
+  vAlpha = isOn * smoothstep(0.6, 2.5, dist) * (1.0 - smoothstep(uBox.x * 0.32, uBox.x * 0.5, dist));
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
 }
 `;
@@ -103,7 +102,7 @@ export class Rain {
     this.geo.instanceCount = Math.min(this.countFor(), (this.geo.getAttribute('seed') as THREE.InstancedBufferAttribute).count);
   }
 
-  update(dt: number, amount: number, lighting: SkyLighting): void {
+  update(dt: number, amount: number, fogAmb: THREE.Vector3): void {
     this.time += dt;
     const vis = amount > 0.01;
     this.mesh.visible = vis;
@@ -114,10 +113,9 @@ export class Rain {
     u.uTime.value = this.time;
     u.uWind.value.copy(this.ctx.env.wind).multiplyScalar(1.4);
     u.uAmount.value = amount;
-    // streak radiance ~ sky ambient (drops refract/reflect the overcast sky)
-    const s = lighting.skyIrr;
-    const k = 2 * 0.55 / Math.PI;
-    u.uColor.value.setRGB(s.r * k + 0.004, s.g * k + 0.004, s.b * k + 0.005);
-    u.uOpacity.value = 0.25 + 0.2 * amount;
+    // streak radiance ~ average environment radiance (drops refract the overcast sky)
+    const a = fogAmb;
+    u.uColor.value.setRGB(a.x * 1.15 + 0.002, a.y * 1.15 + 0.002, a.z * 1.15 + 0.003);
+    u.uOpacity.value = 0.22 + 0.22 * amount;
   }
 }

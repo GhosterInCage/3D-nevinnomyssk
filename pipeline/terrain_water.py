@@ -90,10 +90,13 @@ def estimate_surface(h, kinds):
     return surf
 
 
-def carve(h, surface, kinds, depth_hint=None):
+def carve(h, surface, kinds, depth_hint=None, sdf=None, level_ext=None):
     """Carve beds below `surface` (NaN = dry). `depth_hint` (optional, the water module's
     water_depth.npy) overrides the profile depth where finite; negative hints are emergent
-    gravel bars / islands (bed above the water line). Returns (carved heights, depth grid)."""
+    gravel bars / islands (bed above the water line). `sdf` / `level_ext` (optional, the water
+    module's signed distance to the mapped shoreline, + inside, and the level extended into the
+    band) make the terrain cross the water level exactly on the polygon outline instead of the
+    10 m staircase of the binary mask. Returns (carved heights, depth grid)."""
     h = h.astype(np.float32).copy()
     wet = np.isfinite(surface)
     if not wet.any():
@@ -153,4 +156,32 @@ def carve(h, surface, kinds, depth_hint=None):
     h = np.where(wet & ~bars, np.minimum(h, S - np.maximum(depth * 0.9, 0.15)), h)
     h = np.where(bars, np.maximum(h, S - depth * 0.9), h)
     h = np.where(near & (h < lvl_near + 0.2), lvl_near + 0.2, h)
-    return h.astype(np.float32), np.where(wet, S - h, 0).astype(np.float32)
+    if sdf is not None and level_ext is not None:
+        h = shore_from_sdf(h, S, wet, depth, bars, sdf, level_ext)
+    return h.astype(np.float32), np.where(wet, np.maximum(S - h, 0), 0).astype(np.float32)
+
+
+K_IN = 0.12      # bed slope just inside the shoreline (m per m)
+K_OUT = 0.10     # minimum bank slope just outside (m per m)
+MAX_OUT = 0.7    # the minimum-bank ramp stops rising here (m above water)
+
+
+def shore_from_sdf(h, S, wet, depth, bars, sdf, lv):
+    """Re-shape the samples in the shore band as a function of the exact signed distance."""
+    band = np.isfinite(sdf) & np.isfinite(lv)
+    inside = band & (sdf > 0) & ~bars
+    outside = band & (sdf <= 0)
+    d_in = np.where(inside, sdf, 0)
+    # near the shore the bed depth grows linearly from 0 at the outline, then follows the profile
+    t = smoothstep(0.0, 12.0, d_in)
+    prof = np.where(wet, depth, K_IN * d_in)
+    dep = K_IN * d_in * (1 - t) + np.maximum(prof, K_IN * np.minimum(d_in, 12.0)) * t
+    level_in = np.where(wet, S, lv)
+    bed = level_in - dep
+    # below the water inside the outline (never raise existing deeper beds except at the outline)
+    h = np.where(inside, np.minimum(np.where(d_in < 3.0, bed, h), bed), h)
+    # outside: at least a gentle bank above the water, starting exactly at the outline
+    need = lv + np.minimum(MAX_OUT, K_OUT * np.maximum(-sdf, 0.0))
+    h = np.where(outside & (h < need), need, h)
+    # samples that the binary mask called wet but lie outside the outline become bank
+    return h

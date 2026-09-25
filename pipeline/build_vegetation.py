@@ -52,6 +52,10 @@ from config import GRID_N, GRID_RES, PROC, RAW, REGION_HALF, WEB_DATA, to_local 
 from vegetation_species import MIX, NAME_TO_ID, SHRUB_MIX, SPECIES  # noqa: E402
 
 T0 = time.time()
+# foliage / bark textures (public/textures/vegetation) are produced by vegetation_textures.py
+if "--textures" in sys.argv or not os.path.exists(os.path.join(os.path.dirname(WEB_DATA), "textures", "vegetation", "leaves.webp")):
+    import vegetation_textures
+    vegetation_textures.main()
 OUT = os.path.join(WEB_DATA, "vegetation")
 os.makedirs(OUT, exist_ok=True)
 H = REGION_HALF
@@ -363,7 +367,7 @@ t_nd = smoothstep(0.32, 0.68, ndvi)
 CF = tree10 * (0.35 + 0.65 * t_nd)
 green_extra = smoothstep(0.42, 0.75, ndvi) * (1 - tree10)
 extra_w = np.zeros_like(CF)
-extra_w[zone == Z["private"]] = 0.30
+extra_w[zone == Z["private"]] = 0.22
 extra_w[zone == Z["allotments"]] = 0.45
 extra_w[zone == Z["urban"]] = 0.16
 extra_w[zone == Z["park"]] = 0.30
@@ -380,7 +384,7 @@ excess_s = ndimage.gaussian_filter(np.clip(excess, 0, 40), 1.5)
 CROWN = {"shelterbelt": 9.0, "forest": 11.0, "riparian": 13.0, "urban": 9.0, "park": 9.0, "cemetery": 6.0,
          "private": 6.5, "allotments": 5.5, "industrial": 9.5}
 CLOSURE = {"shelterbelt": 0.85, "forest": 0.85, "riparian": 0.85, "urban": 0.8, "park": 0.9, "cemetery": 0.9,
-           "private": 0.8, "allotments": 0.62, "industrial": 0.7}
+           "private": 0.55, "allotments": 0.36, "industrial": 0.7}
 dens_by_zone = np.array([CLOSURE[n] / (math.pi * (CROWN[n] / 2) ** 2) for n in ZONES], np.float32)
 DENS = CF * dens_by_zone[zone]
 log("expected trees", int(DENS.sum() * 100))
@@ -559,7 +563,7 @@ for cl, w, g, r in road_list:
             u = srng.random()
             if is_private:
                 spacing = srng.uniform(6, 12); off = w / 2 + srng.uniform(1.5, 4.0)
-                jit = 2.5; mixn = "street_private"; p_base = 0.55
+                jit = 2.5; mixn = "street_private"; p_base = 0.42
             else:
                 spacing = srng.uniform(5.5, 9.0); off = w / 2 + srng.uniform(1.8, 4.5)
                 jit = 0.5; mixn = "street_city"; p_base = 0.85 if zn != "industrial" else 0.5
@@ -614,7 +618,7 @@ for cl, w, g, r in road_list:
                         tt /= ln
                         nn = np.array([-tt[1], tt[0]]) * side
                         c = (a + b) / 2 + nn * hoff
-                        samp = np.array([c, a + nn * hoff, b + nn * hoff, (a + c) / 2 + nn * hoff / 2 * 0, ])
+                        samp = np.array([c, a + nn * hoff, b + nn * hoff])
                         jb2, ib2 = fine_idx(samp[:3, 0], samp[:3, 1])
                         nd = bilinear(ndvi, np.array([c[0]]), np.array([c[1]]))[0]
                         if nd > 0.3 and (dist_hard[jb2, ib2].astype(np.float32) >= 0.8).all() \
@@ -739,7 +743,7 @@ dens[m] = 0.55 + 0.45 * smoothstep(0.25, 0.65, ndvi[m]); ctype[m] = 1
 m = wc == 10
 dens[m] = 0.55 * smoothstep(0.3, 0.8, ndvi[m]); ctype[m] = 1
 m = wc == 50
-dens[m] = 0.95 * smoothstep(0.30, 0.55, ndvi[m]); ctype[m] = 0
+dens[m] = 0.95 * smoothstep(0.17, 0.42, ndvi[m]); ctype[m] = 0
 m = wc == 60
 dens[m] = 0.25 * smoothstep(0.15, 0.5, ndvi[m]); ctype[m] = 1
 m = wc == 90

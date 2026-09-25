@@ -16,7 +16,8 @@ Outputs (public/data/terrain/)
                       ((h - hMin) / hScale), then uint16 triangle indices; tiles concatenated
                       in far.json order (vertices of all tiles first, then indices of all tiles)
   far_color.jpg       2048x2048 sRGB albedo (row 0 = north edge of the far square)
-  far_normal.jpg      2048x2048 RG world normal x/z (0..255 -> -1..1)
+  far_normal.jpg      2048x2048 RG world normal x/z (0..255 -> -1..1), B = built-up fraction^0.7
+                      (ESA WorldCover 2021 overview, CC-BY 4.0) used for night lights
 The mesh is a right-triangulated irregular network (RTIN, "Martini") built from a 2049^2 grid at
 180 m with a screen-space error tolerance that grows with the distance from the detailed region,
 so peaks and ridges (Elbrus' double summit) are kept while flat steppe stays coarse.
@@ -219,12 +220,36 @@ col[nod & ~inside] = [0.09, 0.085, 0.06]
 Image.fromarray((srgb_encode(col) * 255 + 0.5).astype(np.uint8)).save(os.path.join(OUT, "far_color.jpg"), quality=88)
 log("far colour written")
 
+# ------------------------------------------------------------------------------ built-up fraction (night lights)
+def fetch_built():
+    cache = f"{PROC}/far_built.npy"
+    if os.path.exists(cache):
+        return np.load(cache)
+    acc = np.zeros((FAR_N, FAR_N), np.float32)
+    for t in ["N42E039", "N42E042", "N45E039", "N45E042"]:
+        url = f"/vsicurl/https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{t}_Map.tif"
+        try:
+            with rasterio.open(url, overview_level=2) as ds:      # 1/8 -> ~80 m
+                a = (ds.read(1) == 50).astype(np.float32)
+                tmp = np.zeros((FAR_N, FAR_N), np.float32)
+                reproject(a, tmp, src_transform=ds.transform, src_crs=ds.crs, dst_transform=far_T,
+                          dst_crs=LOCAL_PROJ, resampling=Resampling.average, src_nodata=None, dst_nodata=0)
+                acc = np.maximum(acc, tmp)
+        except Exception as e:
+            log("  worldcover overview failed", t, e)
+    np.save(cache, acc)
+    return acc
+
+
+built = fetch_built()
+log("built-up fraction mean", float(built.mean()))
+
 # ------------------------------------------------------------------------------ normal map
 gy_, gx_ = np.gradient(ndimage.gaussian_filter(h_out, 0.6), FAR_RES)
 # rows go south: d/dz = +d/drow -> gz = gy_
 nx, nz = -gx_, -gy_
 ln = np.sqrt(nx * nx + nz * nz + 1)
-nrm = np.stack([nx / ln * 0.5 + 0.5, nz / ln * 0.5 + 0.5, np.zeros_like(nx)], -1)
+nrm = np.stack([nx / ln * 0.5 + 0.5, nz / ln * 0.5 + 0.5, np.clip(built, 0, 1) ** 0.7], -1)
 Image.fromarray((np.clip(nrm, 0, 1) * 255 + 0.5).astype(np.uint8)).save(os.path.join(OUT, "far_normal.jpg"), quality=92)
 log("far normal written")
 

@@ -4,7 +4,6 @@
 import * as THREE from 'three';
 import type { AppContext, CityModule } from '../../core/context';
 import type { Quality } from '../../core/settings';
-import { fetchJSON } from '../../core/data';
 import { Cdlod, MinMaxPyramid } from './cdlod';
 import { createDepthMaterial, createGroundMaterial, type Uniforms } from './material';
 import { loadClassMap, loadLayerArray, loadLayersJson, loadTexture, type LayersJson } from './assets';
@@ -12,18 +11,20 @@ import { GROUND_CLASSES, TerrainSampler } from './sampling';
 import { HF_COMMON } from './shaders';
 import { FarTerrain } from './far';
 import { buildNoiseTexture, buildNormalMap } from './textures';
+import { Haze } from './haze';
 
 const LEAF = 80;            // finest node size (m)
 const LEVELS = 9;           // 80 m .. 20480 m
 const NLAYERS = 14;
 const BASE_RANGES = [160, 400, 1500, 3200, 6500, 13000, 26000, 52000, 104000];
 
-interface QualityCfg { gridN: number; rangeScale: number; detailFar: number; micro: boolean; castShadow: boolean; texSize: number }
+// nearScale scales the two finest LOD bands (2.5 m / 5 m spacing at gridN 32), rangeScale the rest
+interface QualityCfg { gridN: number; nearScale: number; rangeScale: number; detailFar: number; micro: boolean; castShadow: boolean; texSize: number }
 const QCFG: Record<Quality, QualityCfg> = {
-  low: { gridN: 16, rangeScale: 0.7, detailFar: 450, micro: false, castShadow: false, texSize: 512 },
-  medium: { gridN: 32, rangeScale: 0.85, detailFar: 1100, micro: true, castShadow: false, texSize: 1024 },
-  high: { gridN: 32, rangeScale: 1.0, detailFar: 1800, micro: true, castShadow: true, texSize: 1024 },
-  ultra: { gridN: 64, rangeScale: 1.2, detailFar: 2600, micro: true, castShadow: true, texSize: 1024 },
+  low: { gridN: 16, nearScale: 1.0, rangeScale: 0.7, detailFar: 450, micro: false, castShadow: false, texSize: 512 },
+  medium: { gridN: 32, nearScale: 1.0, rangeScale: 0.85, detailFar: 1100, micro: true, castShadow: false, texSize: 768 },
+  high: { gridN: 32, nearScale: 1.5, rangeScale: 1.0, detailFar: 1800, micro: true, castShadow: true, texSize: 1024 },
+  ultra: { gridN: 64, nearScale: 1.8, rangeScale: 1.2, detailFar: 2600, micro: true, castShadow: true, texSize: 1024 },
 };
 
 // class -> [layer A, layer B, layer C, oriented rows] and [patch coverage of C, patch
@@ -55,11 +56,11 @@ function isSoftwareRenderer(r: THREE.WebGLRenderer): boolean {
   } catch { return false; }
 }
 
-function ranges(scale: number): number[] {
+function ranges(scale: number, nearScale = 1): number[] {
   const out: number[] = [];
   for (let L = 0; L < LEVELS; L++) {
     const size = LEAF * 2 ** L;
-    let r = BASE_RANGES[L] * (L >= 2 ? scale : 1);
+    let r = BASE_RANGES[L] * (L >= 2 ? scale : nearScale);
     if (L > 0) r = Math.max(r, out[L - 1] + 1.45 * size);
     out.push(r);
   }
@@ -97,6 +98,7 @@ export class Terrain {
   depthMaterial!: THREE.MeshDepthMaterial;
   cdlod!: Cdlod;
   far: FarTerrain | null = null;
+  readonly haze = new Haze();
   private meshes: THREE.Mesh[] = [];
   private cfg: QualityCfg;
   private pyramid: MinMaxPyramid;
@@ -105,12 +107,18 @@ export class Terrain {
   private orthoBlend: [number, number] | null = null;
   private hfVersion = -1;
   private aniso: number;
+  private lite: boolean;
+  private softwareRenderer: boolean;
 
   constructor(private ctx: AppContext) {
     const hf = ctx.heightfield;
     this.cfg = QCFG[ctx.settings.quality] ?? QCFG.medium;
     const forced = Number(ctx.settings.params.get('terrainAniso'));
-    this.aniso = forced > 0 ? forced : isSoftwareRenderer(ctx.renderer) ? 1 : Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy());
+    const software = isSoftwareRenderer(ctx.renderer);
+    this.softwareRenderer = software;
+    this.aniso = forced > 0 ? forced : software ? 1 : Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy());
+    // software rasterisers: cheaper ground shader unless ?terrainFull=1 (look development)
+    this.lite = (software && ctx.settings.params.get('terrainFull') !== '1') || ctx.settings.quality === 'low';
     this.sampler = new TerrainSampler(hf);
     this.pyramid = new MinMaxPyramid(hf.data, hf.n, LEAF / hf.res, LEVELS, 1.5);
     const layerP = Array.from({ length: NLAYERS }, () => new THREE.Vector4(1 / 3, 0.9, 1, 0));
@@ -142,8 +150,11 @@ export class Terrain {
       uRegion: { value: new THREE.Vector4(-hf.half, -hf.half, hf.size, 1 / hf.size) },
       uLook: { value: new THREE.Vector4(0.55, 0.24, 0.9, 1.0) },
       uDebug: { value: new THREE.Vector4(0, 0, 0, 0) },
+      ...this.haze.uniforms,
+      uWeather: { value: new THREE.Vector4() },
       uNormalMap: { value: buildNormalMap(hf) },
       uNoise: { value: buildNoiseTexture() },
+      uTexSize: { value: 1024 },
     };
     this.uniforms.uClass.value = this.uniforms.uClassV.value;
     this.group.name = 'terrain';
@@ -157,12 +168,13 @@ export class Terrain {
     const cfg = this.cfg;
     this.cdlod = new Cdlod({
       x0: -hf.half, z0: -hf.half, size: hf.size, levels: LEVELS, gridN: cfg.gridN,
-      ranges: ranges(cfg.rangeScale), morphFraction: 0.35,
+      ranges: ranges(cfg.rangeScale, cfg.nearScale), morphFraction: 0.35,
       bounds: (level, ix, iz) => this.pyramid.get(level, ix, iz),
       maxPatches: 3000,
     });
     this.uniforms.uMorph.value = this.cdlod.morph;
-    const defines = { TERRAIN_LEVELS: LEVELS, TERRAIN_NLAYERS: NLAYERS, TERRAIN_NCLASSES: GROUND_CLASSES.length };
+    const defines: Record<string, number | string> = { TERRAIN_LEVELS: LEVELS, TERRAIN_NLAYERS: NLAYERS, TERRAIN_NCLASSES: GROUND_CLASSES.length };
+    if (this.lite) defines.TERRAIN_LITE = 1;
     if (!this.material) {
       this.material = this.ctx.registerMaterial(createGroundMaterial(this.uniforms, defines));
       this.depthMaterial = createDepthMaterial(this.uniforms, defines);
@@ -191,7 +203,7 @@ export class Terrain {
       this.cdlod.full.dispose(); this.cdlod.half.dispose();
       this.build();
     } else {
-      this.cdlod.setRanges(ranges(next.rangeScale));
+      this.cdlod.setRanges(ranges(next.rangeScale, next.nearScale));
       for (const m of this.meshes) m.castShadow = next.castShadow;
     }
   }
@@ -202,7 +214,8 @@ export class Terrain {
     const u = this.uniforms;
     const jobs: Promise<unknown>[] = [];
     const an = this.aniso;
-    jobs.push(loadTexture(man.ortho, true, an).then((t) => { u.uOrtho.value = t; if (u.uGround.value?.image?.width === 1) u.uGround.value = t; }));
+    jobs.push(loadTexture(man.ortho, true, an).then((t) => { u.uOrtho.value = t; if (u.uGround.value?.image?.width === 1) u.uGround.value = t; })
+      .catch((e) => console.warn('[terrain] ortho', e)));
     jobs.push(loadTexture('terrain/ground_albedo.jpg', true, an).then((t) => { u.uGround.value = t; }).catch((e) => console.warn('[terrain] ground albedo', e)));
     jobs.push(loadTexture('terrain/ground_shade.jpg', false, Math.min(an, 4)).then((t) => { u.uShade.value = t; }).catch((e) => console.warn('[terrain] shade map', e)));
     jobs.push(loadClassMap('terrain/ground_class.bin.gz', 4096).then(({ data, tex }) => {
@@ -217,17 +230,18 @@ export class Terrain {
         (u.uLayerP.value[k] as THREE.Vector4).set(1 / L.tile, L.rough, 1.0, 0);
         (u.uLayerMean.value[k] as THREE.Vector3).set(L.mean[0], L.mean[1], L.mean[2]);
       }
-      const size = this.cfg.texSize;
+      // software rasterisers thrash the CPU caches on large texture arrays: small mips only
+      const size = this.lite && this.softwareRenderer ? 256 : this.cfg.texSize;
       const [alb, nrm] = await Promise.all([loadLayerArray('albedo', NLAYERS, size, true), loadLayerArray('normal', NLAYERS, size, false)]);
       alb.anisotropy = nrm.anisotropy = an;
-      u.uAlb.value = alb; u.uNrm.value = nrm;
+      u.uAlb.value = alb; u.uNrm.value = nrm; u.uTexSize.value = size;
     })().catch((e) => console.warn('[terrain] detail textures', e)));
     await Promise.all(jobs);
   }
 
   setOrthoBlend(start: number, end: number): void { this.orthoBlend = [start, end]; }
 
-  update(): void {
+  update(dt = 1 / 60): void {
     const ctx = this.ctx;
     const cam = ctx.camera;
     const hf = ctx.heightfield;
@@ -252,6 +266,13 @@ export class Terrain {
     b.x = s; b.y = e;
     // de-roofed ground albedo only makes sense when buildings / trees are drawn on top
     b.w = ctx.get('buildings') || ctx.get('vegetation') ? 1 : 0;
+    // ground wetness follows rain with some inertia (wets fast, dries slowly)
+    const w = this.uniforms.uWeather.value as THREE.Vector4;
+    const target = Math.min(1, ctx.env.rain * 1.5);
+    w.x += (target - w.x) * (target > w.x ? 1 - Math.exp(-dt / 20) : 1 - Math.exp(-dt / 240));
+    if (ctx.settings.shot) w.x = target;
+    w.y = Math.max(0, (w.x - 0.25) / 0.75);
+    this.haze.update(ctx);
     this.far?.update();
   }
 
@@ -289,8 +310,9 @@ function standaloneLights(ctx: AppContext): void {
   const bsun = new THREE.DirectionalLight(0xfff4e6, 3.2);
   const bhemi = hemi.clone();
   ctx.backdrop.scene.add(bsun, bsun.target, bhemi);
-  ctx.backdrop.scene.background = new THREE.Color(0x9fbfe0);
-  ctx.scene.fog = new THREE.FogExp2(0xb4c8dc, 0.000045);
+  const bg = new THREE.Color(0x9fbfe0);
+  const bgNight = new THREE.Color(0x05080f);
+  ctx.backdrop.scene.background = bg.clone();
   ctx.onUpdate(() => {
     const d = ctx.env.sunDirection;
     sun.position.copy(ctx.camera.position).addScaledVector(d, 2000);
@@ -299,6 +321,7 @@ function standaloneLights(ctx: AppContext): void {
     hemi.intensity = 0.25 + 0.9 * Math.max(0, d.y) ** 0.5;
     bsun.position.copy(sun.position); bsun.target.position.copy(sun.target.position);
     bsun.intensity = sun.intensity; bhemi.intensity = hemi.intensity;
+    (ctx.backdrop.scene.background as THREE.Color).copy(bgNight).lerp(bg, 1 - ctx.env.night);
   });
 }
 
@@ -333,14 +356,14 @@ const mod: CityModule = {
       if (w && typeof w.isWater === 'function') terrain.sampler.isWater = (x, z) => !!w.isWater(x, z);
     });
     ctx.events.on('settings', () => { try { terrain.setQuality(ctx.settings.quality); } catch (e) { console.error('[terrain] quality', e); } });
-    ctx.onUpdate(() => terrain.update(), -10);
+    ctx.onUpdate((dt) => terrain.update(dt), -10);
     if (!ctx.settings.wants('sky')) standaloneLights(ctx);
     // assets (macro textures, class map, detail arrays) stream in; screenshots wait for them
     ctx.pending(terrain.loadAssets().catch((e) => console.error('[terrain] assets', e)));
     // far terrain in the backdrop scene
     ctx.pending((async () => {
       try {
-        const far = new FarTerrain(ctx);
+        const far = new FarTerrain(ctx, terrain.haze);
         await far.load();
         terrain.far = far;
         api.far = far;
@@ -348,7 +371,6 @@ const mod: CityModule = {
         console.warn('[terrain] far terrain unavailable', e);
       }
     })());
-    void fetchJSON;
   },
 };
 export default mod;

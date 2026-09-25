@@ -14,6 +14,7 @@ import { signalState } from './service';
 import { MeshBuilder, SurfaceBuilder, densify, headingToDir } from './geom';
 import { S } from './materials';
 import { box } from './bridges';
+import { PT } from './ground';
 
 interface RoadsHost {
   data: import('./data').RoadsData;
@@ -21,6 +22,7 @@ interface RoadsHost {
   surfaceY(x: number, z: number, group: number): number;
   mats: { struct: THREE.Material };
   group: THREE.Group;
+  u: import('./materials').SharedUniforms;
 }
 
 interface ColliderPt { x: number; z: number; col: StaticCollider }
@@ -35,6 +37,10 @@ export class Furniture {
   private grid = new PointGrid<ColliderPt>(64);
   private root = new THREE.Group();
   private frame = 0;
+  private lampHeads: number[] = [];
+  private lampCols: number[] = [];
+  private spots: THREE.SpotLight[] = [];
+  private spotT = 0;
 
   constructor(private ctx: AppContext, private roads: RoadsHost) {
     this.root.name = 'roads-furniture';
@@ -70,7 +76,7 @@ export class Furniture {
     }
     const geos = [lampLED(), lampHPS(), distPole(true), lampBridge(), distPole(false)];
     const mats = [lampLEDMat, lampHPSMat, lampHPSMat, lampLEDMat, lampHPSMat];
-    const ranges = [1100, 1100, 750, 1100, 750];
+    const ranges = [650, 650, 420, 650, 420];
     for (let t = 0; t < 5; t++) {
       if (!byType[t].length) continue;
       const s = new InstanceSet(geos[t], mats[t], byType[t], ranges[t], 3000);
@@ -81,6 +87,17 @@ export class Furniture {
       this.root.add(s.mesh);
     }
     if (glowP.length) this.root.add(createGlowPoints(new Float32Array(glowP), new Float32Array(glowC), this.u));
+    this.lampHeads = glowP;
+    this.lampCols = glowC;
+    // a few real spot lights at the nearest lamps (light facades, trees, cars at night)
+    const nReal = ctx.settings.quality === 'low' ? 0 : ctx.settings.quality === 'medium' ? 4 : 8;
+    for (let i = 0; i < nReal; i++) {
+      const sl = new THREE.SpotLight(0xffffff, 0, 60, 1.25, 0.65, 2);
+      sl.castShadow = false;
+      sl.target.position.set(0, -1, 0);
+      this.root.add(sl, sl.target);
+      this.spots.push(sl);
+    }
 
     // ------------------------------------------------------------ overhead SIP cables along pole chains
     const wireMat = createWireMaterial(ctx, 0x111213, 0.1, 0.6);
@@ -295,14 +312,61 @@ export class Furniture {
     const wg = walls.build();
     if (wg) {
       const m = new THREE.Mesh(wg, this.roads.mats.struct);
-      m.castShadow = true; m.receiveShadow = true; m.name = 'roads-walls';
+      m.castShadow = true; m.receiveShadow = true; m.name = 'roads-walls'; m.userData.ptMaterial = PT.concrete;
       this.root.add(m);
     }
   }
 
-  update(_dt: number): void {
+  private updateSpots(dt: number): void {
+    const ctx = this.ctx;
+    const real = this.roads.u.rsReal.value;
+    const night = ctx.env.night;
+    if (!this.spots.length) return;
+    if (night < 0.02) {
+      for (const s of this.spots) s.intensity = 0;
+      for (const r of real) r.z = 0;
+      return;
+    }
+    this.spotT -= dt;
+    const cam = ctx.camera.position;
+    if (this.spotT <= 0) {
+      this.spotT = 0.4;
+      const H = this.lampHeads;
+      const best: Array<[number, number]> = [];
+      for (let i = 0; i < H.length; i += 3) {
+        const d = (H[i] - cam.x) ** 2 + (H[i + 2] - cam.z) ** 2;
+        if (d > 160 * 160) continue;
+        best.push([d, i]);
+      }
+      best.sort((a, b) => a[0] - b[0]);
+      for (let k = 0; k < this.spots.length; k++) {
+        const s = this.spots[k];
+        const b = best[k];
+        if (!b) { s.userData.idx = -1; continue; }
+        const i = b[1];
+        s.userData.idx = i;
+        s.position.set(H[i], H[i + 1] - 0.15, H[i + 2]);
+        s.target.position.set(H[i], H[i + 1] - 10, H[i + 2]);
+        s.target.updateMatrixWorld();
+        s.color.setRGB(this.lampCols[i], this.lampCols[i + 1], this.lampCols[i + 2]);
+      }
+    }
+    const I = this.roads.u.rsLampI.value;
+    for (let k = 0; k < this.spots.length; k++) {
+      const s = this.spots[k];
+      const i = s.userData.idx ?? -1;
+      if (i < 0) { s.intensity = 0; real[k].set(1e9, 1e9, 0, 0); continue; }
+      const d = Math.hypot(s.position.x - cam.x, s.position.z - cam.z);
+      const w = 1 - Math.min(1, Math.max(0, (d - 70) / 70));
+      s.intensity = I * night * w;
+      real[k].set(s.position.x, s.position.z, w, 0);
+    }
+  }
+
+  update(dt: number): void {
     const ctx = this.ctx;
     this.u.pNight.value = ctx.env.night;
+    this.updateSpots(dt);
     updateWireUniforms(ctx);
     const cam = ctx.camera.position;
     for (const s of this.sets) s.update(cam, 30);

@@ -15,6 +15,7 @@ import { loadWaterData, type WaterBody, type WaterData, type WaterTile } from '.
 import { WaterMaterial, makePathTracerProxy, type WaterUniforms } from './material';
 import { PlanarReflection } from './reflection';
 import { FallbackEnvironment } from './envFallback';
+import { buildPierWakes } from './piers';
 
 const TEX_BASE = `${import.meta.env.BASE_URL}textures/water/`;
 
@@ -78,6 +79,13 @@ class WaterSystem {
   private underwaterMat: THREE.ShaderMaterial;
   private hit = { a: 0, b: 0, c: 0, wa: 0, wb: 0, wc: 0 };
   private tileSize: number;
+  private lastReflPos = new THREE.Vector3(1e9, 0, 0);
+  private lastReflDir = new THREE.Vector3();
+  private tmpDir = new THREE.Vector3();
+  private reflAge = 0;
+  private noReflectScan = -1e9;
+  private hideInReflection: THREE.Object3D[] = [];
+  private lastReflOk = false;
   private half: number;
 
   constructor(private ctx: AppContext, readonly data: WaterData, tex: Record<string, THREE.Texture>) {
@@ -131,7 +139,7 @@ class WaterSystem {
       m.matrixAutoUpdate = false;
       this.meshes.push(m);
       this.group.add(m);
-      const step = Math.max(1, Math.floor(t.x.length / 400));
+      const step = Math.max(1, Math.floor(t.x.length / 120));
       for (let k = 0; k < t.x.length; k += step) {
         if (t.attr[k * 4] < 32) continue;        // skip margin vertices outside the mapped shore
         probes.push(t.x[k], t.y[k], t.z[k]);
@@ -169,6 +177,19 @@ class WaterSystem {
     const on = this.ctx.settings.profile.waterReflections && scale > 0;
     this.material.setPlanar(on);
     if (on) this.reflection.setSize(this.ctx.width, this.ctx.height, this.ctx.pixelRatio);
+  }
+
+  /** Objects flagged `userData.noReflect = true` by any module are skipped in the mirror pass. */
+  private scanNoReflect(): void {
+    this.noReflectScan = this.frameNo;
+    const list: THREE.Object3D[] = [this.group, this.underwater];
+    const visit = (o: THREE.Object3D) => {
+      if (o === this.group) return;
+      if (o.userData && o.userData.noReflect === true && o.visible) { list.push(o); return; }
+      for (const c of o.children) visit(c);
+    };
+    try { visit(this.ctx.scene); visit(this.ctx.backdrop.scene); } catch { /* ignore */ }
+    this.hideInReflection = list;
   }
 
   // ------------------------------------------------------------------ queries
@@ -281,10 +302,24 @@ class WaterSystem {
     if (wantPlanar) {
       if (this.frameNo % 3 === 1 || this.planeY === null) this.planeY = this.choosePlane();
       if (this.planeY !== null) {
-        this.reflection.setSize(ctx.width, ctx.height, ctx.pixelRatio);
-        if (this.reflection.render(ctx, this.planeY, [this.group, this.underwater])) {
+        // medium quality refreshes the mirror every other frame while the view is nearly static;
+        // the texture matrix stays paired with the target, so the lookup remains geometrically exact
+        const cam = ctx.camera;
+        cam.getWorldDirection(this.tmpDir);
+        const moved = cam.position.distanceTo(this.lastReflPos) > 2 || this.tmpDir.angleTo(this.lastReflDir) > 0.02 ||
+          Math.abs(this.planeY - this.reflection.planeY) > 0.05;
+        const every = ctx.settings.quality === 'medium' ? 2 : 1;
+        if (moved || ++this.reflAge >= every || !this.lastReflOk) {
+          this.reflection.setSize(ctx.width, ctx.height, ctx.pixelRatio);
+          if (this.frameNo - this.noReflectScan > 120) this.scanNoReflect();
+          this.lastReflOk = this.reflection.render(ctx, this.planeY, this.hideInReflection);
+          this.reflAge = 0;
+          this.lastReflPos.copy(cam.position);
+          this.lastReflDir.copy(this.tmpDir);
+        }
+        if (this.lastReflOk) {
           on = 1;
-          u.uReflY.value = this.planeY;
+          u.uReflY.value = this.reflection.planeY;
         }
       }
     }
@@ -307,7 +342,8 @@ class WaterSystem {
 
 const mod: CityModule = {
   id: 'water',
-  after: ['terrain'],
+  // no `after`: the height field comes from core, and the roads module waits (briefly) for our
+  // levels to shape its bridges, so the service should appear as early as possible
   async init(ctx: AppContext) {
     const aniso = Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy());
     const work = (async () => {
@@ -339,6 +375,13 @@ const mod: CityModule = {
         try { sys.update(dt); } catch (e) { console.error('[water] update failed', e); }
       }, 100);
       console.info(`[water] ${data.tiles.length} tiles, ${data.meta.stats?.triangles ?? '?'} triangles, ${data.meta.bodies.length} bodies`);
+      // foam wakes at bridge piers (only when the roads module, which builds the piers, is loaded)
+      if (ctx.settings.wants('roads')) {
+        try {
+          const wakes = await buildPierWakes(ctx, api, { foam, noise }, sys.material.uniforms.uTime);
+          if (wakes) sys.group.add(wakes);
+        } catch (e) { console.warn('[water] pier wakes skipped', e); }
+      }
     })();
     await ctx.pending(work).catch((e) => console.error('[water] init failed', e));
   },

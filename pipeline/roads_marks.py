@@ -46,10 +46,38 @@ def markings(rlines, polys, junctions, graph, pool, log):
     carriage = polys["carriage"]
     jp = junctions["pts"]
     jr = junctions["r"]
-    jdisc = shapely.union_all(shapely.buffer(shapely.points(jp), jr + 0.6)) if len(jr) else None
-    jnear = shapely.union_all(shapely.buffer(shapely.points(jp), jr + 22)) if len(jr) else None
+    discs = shapely.buffer(shapely.points(jp), jr + 0.6) if len(jr) else np.array([])
+    nears = shapely.buffer(shapely.points(jp), jr + 15) if len(jr) else np.array([])
+    dtree = STRtree(discs) if len(discs) else None
+    ntree = STRtree(nears) if len(nears) else None
     inner = carriage.buffer(-0.12)
-    shapely.prepare(inner)
+    # tile the (huge) carriageway polygon so per-line clipping stays local
+    TS = 256.0
+    inner_tiles = {}
+    bx0, bz0, bx1, bz1 = inner.bounds
+    for i in range(int(np.floor(bx0 / TS)), int(np.floor(bx1 / TS)) + 1):
+        for j in range(int(np.floor(bz0 / TS)), int(np.floor(bz1 / TS)) + 1):
+            t = shapely.clip_by_rect(inner, i * TS - 30, j * TS - 30, (i + 1) * TS + 30, (j + 1) * TS + 30)
+            if not t.is_empty:
+                inner_tiles[(i, j)] = t
+
+    def local_inner(g):
+        x0, z0, x1, z1 = g.bounds
+        parts = [inner_tiles[(i, j)] for i in range(int(np.floor(x0 / TS)), int(np.floor(x1 / TS)) + 1)
+                 for j in range(int(np.floor(z0 / TS)), int(np.floor(z1 / TS)) + 1) if (i, j) in inner_tiles]
+        if not parts:
+            return None
+        u = parts[0] if len(parts) == 1 else shapely.union_all(parts)
+        return shapely.clip_by_rect(u, x0 - 1, z0 - 1, x1 + 1, z1 + 1)
+
+    def local_union(tree, geoms, g):
+        if tree is None:
+            return None
+        idx = tree.query(g)
+        if len(idx) == 0:
+            return None
+        return shapely.union_all(geoms[idx])
+
     n_mark = 0
 
     def emit(pts, style, width, group, clip=True):
@@ -57,9 +85,11 @@ def markings(rlines, polys, junctions, graph, pool, log):
         ls = LineString(pts)
         if clip and group < 0:
             g = ls
-            if jdisc is not None:
-                g = g.difference(jdisc)
-            g = g.intersection(inner)
+            jd = local_union(dtree, discs, g)
+            if jd is not None:
+                g = g.difference(jd)
+            li = local_inner(ls)
+            g = g.intersection(li) if li is not None else LineString()
             pieces = merge_lines(g)
         else:
             pieces = [ls]
@@ -67,10 +97,11 @@ def markings(rlines, polys, junctions, graph, pool, log):
             if pc.length < 1.0:
                 continue
             p = np.array(pc.coords)
-            if style in (M_DASH_URBAN, M_DASH_RURAL) and jnear is not None and group < 0:
+            jn = local_union(ntree, nears, pc) if style in (M_DASH_URBAN, M_DASH_RURAL) and group < 0 else None
+            if jn is not None:
                 # solid (1.1) in the last ~20 m before junctions
-                near = pc.intersection(jnear)
-                far = pc.difference(jnear)
+                near = pc.intersection(jn)
+                far = pc.difference(jn)
                 for q in merge_lines(near):
                     if q.length > 1.0:
                         pool.add(np.array(q.coords), K_MARK, M_SOLID, width, group)
@@ -112,6 +143,35 @@ def markings(rlines, polys, junctions, graph, pool, log):
             emit(offset_polyline(p, -(hw - 0.35)), M_EDGE, 0.15, g)
     log(f"markings: {n_mark} line polylines")
 
+    # ---------------- parking stalls (perpendicular 2.5 m bays along the long sides of each lot)
+    n_park = 0
+    parking = polys["surfaces"].get(9)
+    for pg in ([] if parking is None else [q for q in getattr(parking, "geoms", [parking]) if q.geom_type == "Polygon"]):
+        if pg.area < 180:
+            continue
+        rr = np.array(pg.minimum_rotated_rectangle.exterior.coords)[:4]
+        e0, e1 = rr[1] - rr[0], rr[2] - rr[1]
+        if np.linalg.norm(e0) < np.linalg.norm(e1):
+            rr = np.roll(rr, -1, axis=0)
+            e0, e1 = rr[1] - rr[0], rr[2] - rr[1]
+        L, W = np.linalg.norm(e0), np.linalg.norm(e1)
+        if L < 8 or W < 5.5:
+            continue
+        u, v = e0 / L, e1 / W
+        inner_p = pg.buffer(-0.25)
+        rows = [(rr[0], v)] + ([(rr[3], -v)] if W >= 13 else [])
+        for base, dirv in rows:
+            k = 1
+            while k * 2.5 < L - 1.0:
+                a = base + u * k * 2.5
+                ln = LineString([a, a + dirv * 5.0]).intersection(inner_p)
+                for piece in lines_of(ln):
+                    if piece.length > 2.0:
+                        pool.add(np.array(piece.coords), K_MARK, M_SOLID, 0.1, -1)
+                        n_park += 1
+                k += 1
+    log(f"markings: {n_park} parking stall lines")
+
     # ---------------- zebra crossings
     pts = load_points({"crossing", "traffic_signals", "give_way", "stop"})
     road_l = [r for r in rlines if r["kind"] == "road" and r["cls"] in DRIVE and r["group"] < 0]
@@ -134,7 +194,7 @@ def markings(rlines, polys, junctions, graph, pool, log):
         r = road_l[int(j[0])]
         if r["cls"] == "service" and not mk.startswith("zebra"):
             continue
-        if r["surf"] not in (0, 1, 2, 5):
+        if r["surf"] not in (0, 1, 2, 10):
             continue
         s = r["line"].project(P)
         pc = interp(r["p"], r["c"], s)

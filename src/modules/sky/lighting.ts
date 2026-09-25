@@ -135,7 +135,7 @@ export class SkyLighting {
     const envSphere = new THREE.Mesh(new THREE.SphereGeometry(10, 32, 16), this.envMat);
     envSphere.frustumCulled = false;
     this.envScene.add(envSphere);
-    const envSize = ctx.settings.quality === 'low' ? 32 : 64;
+    const envSize = ctx.settings.quality === 'low' || ctx.settings.shot ? 32 : 64;
     this.cubeRT = new THREE.WebGLCubeRenderTarget(envSize, { type: THREE.HalfFloatType, generateMipmaps: false });
     this.cubeCam = new THREE.CubeCamera(0.1, 100, this.cubeRT);
     this.envScene.add(this.cubeCam);
@@ -260,9 +260,9 @@ export class SkyLighting {
     // night sky: airglow + light pollution (app units), city glow on cloud bases
     const nk = nightK;
     const cloudBoost = 1 + 2.5 * cc;
-    u.skNightZenith.value.set(0.00035, 0.00055, 0.0011).multiplyScalar(nk * (1 + cc));
-    u.skNightHorizon.value.set(0.0045, 0.0030, 0.0017).multiplyScalar(nk * cloudBoost);
-    u.skCityGlow.value.set(0.020, 0.013, 0.0075).multiplyScalar(nk);
+    u.skNightZenith.value.set(0.0019, 0.0026, 0.0048).multiplyScalar(nk * (1 + 0.8 * cc));
+    u.skNightHorizon.value.set(0.0110, 0.0086, 0.0060).multiplyScalar(nk * cloudBoost);
+    u.skCityGlow.value.set(0.0110, 0.0095, 0.0080).multiplyScalar(nk);
 
     // fog lighting (app units)
     const skyH = lum(this.skyIrr) * S;
@@ -302,7 +302,7 @@ export class SkyLighting {
     const nightFloor = 0.03 * nk + 0.004;
     const L = sunKeyH + skyH * (1 - 0.35 * overcast) + moonH + nightFloor;
     const Lref = 3.2;
-    this.exposureTarget = THREE.MathUtils.clamp(1.05 * Math.pow(Lref / L, 0.6), 0.55, 9.0);
+    this.exposureTarget = THREE.MathUtils.clamp(1.05 * Math.pow(Lref / L, 0.68), 0.55, 13.0);
     if (instant) this.exposure = this.exposureTarget;
     else this.exposure += (this.exposureTarget - this.exposure) * (1 - Math.exp(-dt * 1.5));
 
@@ -337,6 +337,7 @@ export class SkyLighting {
     this.lastEnvTime = t;
     const r = ctx.renderer;
     const prevTarget = r.getRenderTarget();
+    const t0 = performance.now();
     try {
       this.cubeCam.position.set(0, 0, 0);
       this.cubeCam.update(r, this.envScene);
@@ -354,6 +355,10 @@ export class SkyLighting {
       console.error('[sky] environment update failed', e);
     }
     r.setRenderTarget(prevTarget);
+    if (ctx.settings.params.get('skylog') === '1') {
+      const f = (c: THREE.Color) => `${c.r.toFixed(4)},${c.g.toFixed(4)},${c.b.toFixed(4)}`;
+      console.info(`[sky] env update ${Math.round(performance.now() - t0)}ms h=${ctx.env.hours.toFixed(2)} el=${ctx.env.sunElevation.toFixed(1)} exp=${this.exposureTarget.toFixed(2)} sun=${f(this.sunIrr)} sky=${f(this.skyIrr)} moon=${f(this.moonIrr)} moonEl=${this.moonElevation.toFixed(1)} phase=${this.moonPhase.toFixed(2)}`);
+    }
   }
 
   get envTexture(): THREE.Texture | null { return this.envRT?.texture ?? null; }

@@ -116,7 +116,10 @@ const CHUNK = 1024;
 
 export class Forest {
   readonly group = new THREE.Group();
+  /** key = species id * 8 + variant */
   readonly species = new Map<number, SpeciesRT>();
+  /** species id -> variants */
+  readonly variants = new Map<number, SpeciesRT[]>();
   private atlas: ImpostorAtlas | null = null;
   private impMat: THREE.MeshStandardMaterial | null = null;
   private impDepth: THREE.MeshDepthMaterial | null = null;
@@ -126,14 +129,21 @@ export class Forest {
   private projScreen = new THREE.Matrix4();
   private sphere = new THREE.Sphere();
   private quad = impostorQuad();
-  stats = { lod0: 0, lod1: 0, imp: 0, chunks: 0 };
+  stats = { lod0: 0, lod1: 0, imp: 0, chunks: 0, meshTris: 0, meshCalls: 0 };
 
   constructor(private ctx: AppContext, private data: VegData, public p: ForestParams) {
     this.group.name = 'vegetation-forest';
     ctx.scene.add(this.group);
   }
 
-  addSpecies(def: SpeciesDef, model: TreeModel, tex: Textures, slot: number): void {
+  /** Runtime species (variant) used for instance k. */
+  pick(k: number): SpeciesRT | undefined {
+    const arr = this.variants.get(this.data.sp[k]);
+    if (!arr) return undefined;
+    return arr.length === 1 ? arr[0] : arr[Math.floor(this.data.rank[k] * 9973) % arr.length];
+  }
+
+  addSpecies(def: SpeciesDef, model: TreeModel, tex: Textures, slot: number, variant = 0): void {
     const bark = tex.bark[def.bark];
     const isTree = def.kind === 'tree';
     const fade0 = { value: new THREE.Vector4() };
@@ -155,7 +165,11 @@ export class Forest {
       ? new LodSet([mk(model.lod0.bark, false, fade0, 0), mk(model.lod0.leaves, true, fade0, 0)], this.group, 64, true, `veg-${def.name}-lod0`)
       : null;
     const lod1 = new LodSet([mk(model.lod1.bark, false, fade1, 1), mk(model.lod1.leaves, true, fade1, 1)], this.group, 256, true, `veg-${def.name}-lod1`);
-    this.species.set(def.id, { def, model, slot, lod0, lod1, isTree, fade0, fade1 });
+    const rt: SpeciesRT = { def, model, slot, lod0, lod1, isTree, fade0, fade1 };
+    this.species.set(def.id * 8 + variant, rt);
+    const arr = this.variants.get(def.id) ?? [];
+    arr.push(rt);
+    this.variants.set(def.id, arr);
   }
 
   /** Bake impostors for all tree species and create the far-field material. */
@@ -206,7 +220,7 @@ export class Forest {
       d.ensureHeights(c, hf);
       for (let k = s; k < e; k++) {
         if (d.removed[k]) continue;
-        const sp = this.species.get(d.sp[k]);
+        const sp = this.pick(k);
         if (!sp || sp.slot < 0) continue;
         idx.push(k);
       }
@@ -218,7 +232,7 @@ export class Forest {
     let ymin = Infinity, ymax = -Infinity;
     for (let t = 0; t < idx.length; t++) {
       const k = idx[t];
-      const sp = this.species.get(d.sp[k])!;
+      const sp = this.pick(k)!;
       const sY = d.h[k] / sp.model.height;
       let sXZ = d.w[k] / sp.model.crown;
       sXZ = Math.min(Math.max(sXZ, sY * 0.65), sY * 1.5);
@@ -315,7 +329,7 @@ export class Forest {
         d.ensureHeights(c, hf);
         for (let k = s; k < e; k++) {
           if (d.removed[k]) continue;
-          const sp = this.species.get(d.sp[k]);
+          const sp = this.pick(k);
           if (!sp) continue;
           const h = d.h[k];
           const x = d.x[k], y = d.y[k], z = d.z[k];
@@ -342,8 +356,15 @@ export class Forest {
         }
       });
     }
-    for (const s of this.species.values()) { s.lod0?.commit(); s.lod1.commit(); }
-    this.stats.lod0 = n0; this.stats.lod1 = n1;
+    let tris = 0, calls = 0;
+    for (const s of this.species.values()) {
+      s.lod0?.commit(); s.lod1.commit();
+      for (const set of [s.lod0, s.lod1]) {
+        if (!set || !set.count) continue;
+        for (const m of set.meshes) { tris += set.count * (m.geometry.index ? m.geometry.index.count / 3 : 0); calls++; }
+      }
+    }
+    this.stats.lod0 = n0; this.stats.lod1 = n1; this.stats.meshTris = tris; this.stats.meshCalls = calls;
 
     // ---- far chunks
     let nImp = 0, nCh = 0;
@@ -461,7 +482,7 @@ export class Forest {
       d.ensureHeights(c, this.ctx.heightfield);
       for (let k = s; k < e; k++) {
         if (d.removed[k]) continue;
-        const sp = this.species.get(d.sp[k]);
+        const sp = this.pick(k);
         if (!sp || !sp.isTree) continue;
         const dx = d.x[k] - x, dz = d.z[k] - z;
         if (dx * dx + dz * dz > r * r) continue;

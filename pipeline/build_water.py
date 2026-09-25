@@ -440,6 +440,8 @@ def fit_kuban():
     up = s < s_weir
     st1, p1 = profile_from_samples(s[up], z[up], s_weir, 50, pct=20, w_min=12)
     st2, p2 = profile_from_samples(s[~up] - s_weir, z[~up], L - s_weir, 50, pct=20, w_min=12)
+    st1 = np.append(st1, s_weir - 1.0)
+    p1 = np.append(p1, p1[-1])
     st = np.concatenate([st1, st2 + s_weir + 1.0])
     drop = max(1.5, p1[-1] - p2[0])
     p1 = np.maximum(p1, p2[0] + drop)
@@ -1052,3 +1054,9 @@ meta = dict(
 )
 json.dump(meta, open(os.path.join(out_dir, "water.json"), "w"), ensure_ascii=False, separators=(",", ":"))
 log("written public/data/water: %.2f MB gz, %d tiles" % (os.path.getsize(os.path.join(out_dir, "water.bin.gz")) / 1e6, len(tiles)))
+
+# procedural textures (public/textures/water) - regenerate when missing
+_tex_dir = os.path.join(ROOT, "public", "textures", "water")
+if not all(os.path.exists(os.path.join(_tex_dir, f)) for f in ("ripple_n.png", "wave_n.png", "foam.png", "noise.png")):
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "water_textures.py"), run_name="__main__")

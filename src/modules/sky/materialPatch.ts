@@ -29,7 +29,7 @@ float skpCloudShadow(const vec3 pW) {
   float large = texture2D(skCloudTex, SKP_ROT * uv * 0.37 + 0.21).a;
   float cov = clamp(skCloudP0.x + (large - 0.5) * skCloudP1.w * (1.0 - skCloudP0.x) * 2.0, 0.0, 1.0);
   float d = clamp((r - (1.0 - cov * 1.35)) / 0.35, 0.0, 1.0);
-  return exp(-d * skCloudP1.z * 0.45);
+  return mix(1.0, 0.2, 1.0 - exp(-d * skCloudP1.z * 0.35));
 }
 `;
 

@@ -96,11 +96,11 @@ export function tube(mb: MeshBuilder, a: V3, b: V3, r0: number, r1: number, seg:
 
 /** Glass-disc insulator string hanging from `top` down by `len`. */
 function insulator(mb: MeshBuilder, top: V3, len: number, glass = true): void {
-  const n = Math.max(2, Math.round(len / 0.17));
-  tube(mb, top, [top[0], top[1] - len, top[2]], 0.02, 0.02, 4, COL.steelDark, 0, false);
+  const n = Math.max(2, Math.round(len / 0.3));
+  tube(mb, top, [top[0], top[1] - len, top[2]], 0.02, 0.02, 3, COL.steelDark, 0, false);
   for (let i = 0; i < n; i++) {
     const y = top[1] - 0.1 - (i * (len - 0.15)) / n;
-    tube(mb, [top[0], y, top[2]], [top[0], y - 0.05, top[2]], 0.13, 0.05, 8, glass ? COL.insulGlass : COL.insulPorcelain);
+    tube(mb, [top[0], y, top[2]], [top[0], y - 0.08, top[2]], 0.14, 0.05, 6, glass ? COL.insulGlass : COL.insulPorcelain, 0, false);
   }
 }
 

@@ -59,7 +59,7 @@ export function createGlowPoints(positions: Float32Array, colors: Float32Array, 
   g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   g.computeBoundingSphere();
   const m = new THREE.ShaderMaterial({
-    uniforms: { pNight: u.pNight, pScale: { value: 600 } },
+    uniforms: { pNight: u.pNight, pScale: { value: 160 } },
     vertexShader: /* glsl */ `
       uniform float pNight;
       uniform float pScale;
@@ -72,9 +72,9 @@ export function createGlowPoints(positions: Float32Array, colors: Float32Array, 
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         float d = -mv.z;
         gl_Position = projectionMatrix * mv;
-        gl_PointSize = clamp(pScale * 1.6 / max(d, 1.0), 2.0, 48.0);
+        gl_PointSize = clamp(pScale * 1.6 / max(d, 1.0), 2.0, 14.0);
         vCol = color;
-        vA = pNight * (1.0 - smoothstep(6000.0, 12000.0, d)) * smoothstep(15.0, 60.0, d);
+        vA = pNight * (1.0 - smoothstep(6000.0, 12000.0, d)) * smoothstep(40.0, 150.0, d);
         #include <logdepthbuf_vertex>
       }`,
     fragmentShader: /* glsl */ `

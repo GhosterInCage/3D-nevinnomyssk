@@ -18,8 +18,8 @@ SPECIES = {
     8: ("boxelder", "tree", (7, 13), (0.75, 1.0)),            # Acer negundo (weedy, multi-stem)
     9: ("elm", "tree", (9, 16), (0.6, 0.8)),                  # Ulmus pumila (Siberian elm)
     10: ("walnut", "tree", (11, 19), (0.8, 1.0)),             # Juglans regia
-    11: ("fruit", "tree", (4, 8), (0.8, 1.1)),                # apple / apricot / plum / pear
-    12: ("cherry", "tree", (3.5, 6.5), (0.75, 1.0)),          # Prunus cerasus / avium
+    11: ("fruit", "tree", (3.5, 7), (0.8, 1.1)),                # apple / apricot / plum / pear
+    12: ("cherry", "tree", (3, 5.5), (0.75, 1.0)),          # Prunus cerasus / avium
     13: ("oak", "tree", (15, 24), (0.7, 0.9)),                # Quercus robur
     14: ("ash", "tree", (15, 24), (0.5, 0.65)),               # Fraxinus excelsior / pennsylvanica
     15: ("birch", "tree", (13, 21), (0.35, 0.5)),             # Betula pendula

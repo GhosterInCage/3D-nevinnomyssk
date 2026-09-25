@@ -156,7 +156,7 @@ export function makeTreeMaterials(opts: {
     vertexColors: true,
     side: opts.leaves ? THREE.DoubleSide : THREE.FrontSide,
     alphaTest: opts.leaves ? 0.42 : 0,
-    envMapIntensity: 0.6,
+    envMapIntensity: opts.leaves ? 1.0 : 0.8,
   });
   if (opts.normalMap) mat.normalScale.set(1.2, 1.2);
   const o: TreeMatOpts = { leaves: opts.leaves, modelH: opts.modelH, stiff: opts.stiff, translucency: opts.translucency, fade: opts.fade };

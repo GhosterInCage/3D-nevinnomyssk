@@ -14,8 +14,8 @@ Stages
 
 Output format (little-endian) - see src/modules/buildings/format.ts for the reader:
   buildings.bin.gz
-    header 64 B: 'NBLD', u32 version, u32 nBuildings, u32 nVerts, u32 nRings, u32 nParts,
-                 f32 tileSize, u32 tilesX, f32 originX, f32 originZ, u32 nTiles, reserved
+    header 64 B: 'NBLD', u32 version (2), u32 nBuildings, u32 nVerts, u32 nRings, u32 nParts,
+                 f32 tileSize, u32 tilesX, f32 originX, f32 originZ, u32 nTiles, u32 nFences, reserved
     u32 tileStart[nTiles+1]      buildings sorted by tile (tile = tz*tilesX + tx, 512 m tiles)
     record[nBuildings] 52 B      centre (f32 x, f32 z world), vertStart, ringStart, partStart,
                                  u16 vertCount, u8 ringCount, u8 partCount, u16 height dm,
@@ -28,6 +28,10 @@ Output format (little-endian) - see src/modules/buildings/format.ts for the read
     u16 ringLen[nRings]          outer ring first (negative signed area in x/z), then holes
     part[nParts] 12 B            roof rectangles: i16 cx, i16 cz (cm), u16 halfLen, u16 halfWid (cm),
                                  i16 angle (1e-4 rad, ridge direction (cos a, sin a) in x/z), u16 0
+    u32 fenceTileStart[nTiles+1] plot fences sorted by tile of their midpoint
+    fence[nFences] 16 B          i16 x0, z0, x1, z1 (cm rel. tile centre, world x/z), u8 type
+                                 (0 sheet, 1 sheet+brick pillars, 2 wood, 3 picket, 4 gate),
+                                 u8 height dm, u8 rgb[3], u8 seed, u16 0
   ids.bin.gz   'NBID', u32 n, u32 idHi[n], u32 idLo[n] (first 16 hex digits of the Overture id),
                u32 osmId[n], u8 osmKind[n] (0 none, 1 node, 2 way, 3 relation)
   meta.json    typology names, name table, model validation report, stats
@@ -53,6 +57,7 @@ from buildings_clean import load_clean
 import buildings_features as bf
 from buildings_geom import rect_decompose, mrr_dims, square_polygon
 import buildings_s2winter as s2w
+from buildings_fences import build_fences
 
 OUT = os.path.join(WEB_DATA, "buildings")
 TILE = 512.0
@@ -73,9 +78,9 @@ F_Q2, F_SHOP, F_BALC, F_ENTR, F_OSM, F_NAMED, F_LABEL, F_STREETSHOP = 1, 2, 4, 8
 APT_TYPES = {T_KHRU, T_PANEL9, T_TOWER, T_STALINKA, T_LOWAPT, T_MODERN}
 
 # ------------------------------------------------------------------ palettes (sRGB)
-P_PLASTER = [(236, 230, 214), (242, 236, 222), (233, 216, 170), (228, 205, 160), (240, 214, 188),
-             (214, 222, 206), (205, 214, 222), (226, 226, 222), (230, 196, 170), (200, 205, 190),
-             (245, 245, 240), (222, 186, 150)]
+P_PLASTER = [(222, 216, 200), (230, 222, 204), (226, 208, 165), (218, 196, 156), (228, 204, 180),
+             (204, 212, 196), (196, 204, 212), (214, 212, 206), (220, 188, 160), (192, 196, 182),
+             (232, 228, 218), (210, 178, 146), (205, 195, 175), (224, 214, 186)]
 P_REDBRICK = [(150, 74, 52), (160, 82, 58), (138, 66, 48), (170, 96, 70), (128, 62, 46)]
 P_SILICATE = [(214, 212, 204), (205, 203, 196), (222, 219, 210), (196, 194, 188)]
 P_YELBRICK = [(212, 184, 130), (200, 170, 118), (222, 196, 146)]
@@ -90,8 +95,10 @@ P_GARAGE = [(196, 194, 188), (220, 218, 210), (160, 86, 64), (180, 176, 170)]
 P_SCHOOL = [(226, 216, 196), (216, 214, 206), (236, 222, 200), (220, 206, 190)]
 P_KINDER = [(240, 226, 196), (236, 214, 200), (222, 232, 214), (232, 222, 236)]
 
-R_METALTILE = [(112, 42, 36), (92, 48, 36), (74, 56, 46), (46, 86, 60), (46, 70, 110), (96, 96, 98), (130, 50, 40)]
-R_CORR = [(168, 172, 174), (150, 156, 160), (112, 42, 36), (46, 86, 60), (46, 70, 110), (190, 192, 190), (92, 48, 36)]
+R_METALTILE = [(102, 40, 34), (84, 48, 38), (70, 54, 46), (44, 78, 56), (44, 64, 98), (92, 92, 94), (120, 48, 38)]
+W_METALTILE = [3, 3, 2, 2, 0.8, 1, 1]
+R_CORR = [(160, 164, 166), (140, 146, 150), (84, 48, 38), (44, 78, 56), (102, 40, 34), (44, 64, 98), (180, 182, 180)]
+W_CORR = [4, 2, 2, 1.5, 1, 0.6, 1]
 R_SLATE = [(150, 150, 146), (136, 138, 134), (160, 158, 150), (122, 124, 120)]
 R_SEAM = [(76, 106, 80), (112, 52, 44), (120, 124, 128), (150, 154, 156), (60, 90, 70)]
 R_BITUMEN = [(62, 62, 64), (54, 54, 56), (72, 70, 68), (84, 84, 84)]
@@ -581,8 +588,9 @@ def params_for(k, r, t, lv, labelled, F, rnd, hovr, minh):
     if p.get('rcol') is None or p['rmat'] in (M_BITUMEN, M_GRAVEL, M_SLATE, M_GLASS) or t not in (T_REL,):
         pal = {M_BITUMEN: R_BITUMEN, M_GRAVEL: R_GRAVEL, M_CORR: R_CORR, M_MTILE: R_METALTILE,
                M_SLATE: R_SLATE, M_SEAM: R_SEAM, M_GLASS: R_GLASS, M_TILES: R_METALTILE}[p['rmat']]
+        w = W_CORR if p['rmat'] == M_CORR else W_METALTILE if p['rmat'] in (M_MTILE, M_TILES) else None
         if not (t == T_REL and p.get('rcol')):
-            p['rcol'] = jitter(rnd.pick(pal), rnd, 5)
+            p['rcol'] = jitter(rnd.pick(pal, w), rnd, 5)
     # height
     if labelled and lv:
         p['levels'] = lv
@@ -733,6 +741,10 @@ def main():
     lv_all = np.array([x[2]['levels'] for x in out_recs])
     print("[levels]", {int(a): int(b) for a, b in zip(*np.unique(lv_all, return_counts=True))})
 
+    # ------------------------------------------------------------ plot fences (private houses)
+    typ_final = np.array([x[1] for x in out_recs])
+    fences = build_fences(recs, typ_final, {T_HOUSE}, lambda key: Rnd(key))
+
     # ------------------------------------------------------------ write
     os.makedirs(OUT, exist_ok=True)
     half = REGION_HALF
@@ -801,8 +813,23 @@ def main():
         stats["typology"][TYP_NAMES[t]] = stats["typology"].get(TYP_NAMES[t], 0) + 1
     V = np.concatenate(verts).astype('<i2')
     RL = np.array(ring_len, '<u2')
-    header = struct.pack('<4sIIIIIfIffI20x', b'NBLD', 1, n, nv, len(ring_len), npart, TILE, tiles_x,
-                         -half, -half, ntiles)
+    # fences: sorted by tile of their midpoint, cm relative to the tile centre (world x/z)
+    fx = np.array([(f[0] + f[2]) / 2 for f in fences])
+    fz = -np.array([(f[1] + f[3]) / 2 for f in fences])
+    ftile = np.clip(((fz + half) // TILE).astype(int), 0, tiles_x - 1) * tiles_x + np.clip(((fx + half) // TILE).astype(int), 0, tiles_x - 1)
+    forder = np.argsort(ftile, kind='stable')
+    fence_start = np.searchsorted(ftile[forder], np.arange(ntiles + 1)).astype('<u4')
+    fence_buf = bytearray()
+    for fi in forder:
+        x0, y0, x1, y1, ft, fh, fc = fences[fi]
+        t = ftile[fi]
+        tcx = -half + (t % tiles_x + 0.5) * TILE
+        tcz = -half + (t // tiles_x + 0.5) * TILE
+        fence_buf += struct.pack('<hhhhBB3BBH', int(round((x0 - tcx) * 100)), int(round((-y0 - tcz) * 100)),
+                                 int(round((x1 - tcx) * 100)), int(round((-y1 - tcz) * 100)), ft,
+                                 min(255, int(round(fh * 10))), *fc, int(fi * 2654435761 % 256), 0)
+    header = struct.pack('<4sIIIIIfIffII16x', b'NBLD', 2, n, nv, len(ring_len), npart, TILE, tiles_x,
+                         -half, -half, ntiles, len(fences))
     body = bytearray(header)
     body += tile_start.tobytes()
     body += rec_buf
@@ -811,6 +838,8 @@ def main():
     while len(body) % 4:
         body += b'\0'
     body += parts_buf
+    body += fence_start.tobytes()
+    body += fence_buf
     with gzip.open(os.path.join(OUT, "buildings.bin.gz"), "wb", compresslevel=9) as f:
         f.write(bytes(body))
     idb = struct.pack('<4sI', b'NBID', n) + np.array(ids_hi, '<u4').tobytes() + np.array(ids_lo, '<u4').tobytes() + \
@@ -832,7 +861,7 @@ def main():
     }
     json.dump(meta, open(os.path.join(OUT, "meta.json"), "w"), ensure_ascii=False, indent=1)
     sz = os.path.getsize(os.path.join(OUT, "buildings.bin.gz"))
-    print(f"[write] {n} buildings, {nv} verts, {npart} roof parts, {sz / 1e6:.2f} MB gz, {time.time() - t0:.0f}s")
+    print(f"[write] {n} buildings, {nv} verts, {npart} roof parts, {len(fences)} fence pieces, {sz / 1e6:.2f} MB gz, {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

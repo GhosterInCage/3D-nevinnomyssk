@@ -119,7 +119,11 @@ depth_in = ndimage.distance_transform_edt(tree_only) * GRID_RES
 k_sm = smoothstep(10, 60, depth_in)
 fb_s = ndimage.gaussian_filter(dsm, 1.2) * (1 - k_sm) + ndimage.gaussian_filter(dsm, 3.5) * k_sm
 fill_b = fb_s - canopy * smoothstep(0, 25, depth_in + 10)
-g = np.where(tree_only, np.minimum(fill_a, np.maximum(fill_b, fill_a - 20.0)), fill_a)
+# only wide stands may go below the trend fill (forested ravines); small clumps and shelterbelts
+# would otherwise get pits wherever the canopy estimate exceeds their (smeared) DSM bump
+allow = 20.0 * smoothstep(25.0, 90.0, depth_in)
+allow = ndimage.gaussian_filter(allow, 2.0)
+g = np.where(tree_only, np.minimum(fill_a, np.maximum(fill_b, fill_a - allow)), fill_a)
 print("canopy est median", c_med, "applied median", float(np.median(canopy[tree_only])),
       "p90", float(np.percentile(canopy[tree_only], 90)))
 # built-up areas: residual object bumps -> smooth filled cells a bit more

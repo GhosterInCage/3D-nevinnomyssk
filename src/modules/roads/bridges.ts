@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import type { AppContext, StaticCollider } from '../../core/context';
 import { view, type BridgeRec, type RoadsData } from './data';
 import { Polyline, SurfaceBuilder, densify, MeshBuilder } from './geom';
-import type { Ground } from './ground';
+import { PT, type Ground } from './ground';
 import { S } from './materials';
 
 const GRADE = 0.05;
@@ -252,14 +252,14 @@ export class Bridges {
     const dg = deck.build();
     if (dg) {
       const m = new THREE.Mesh(dg, mats.deck);
-      m.receiveShadow = true; m.castShadow = true; m.name = 'roads-bridge-decks';
+      m.receiveShadow = true; m.castShadow = true; m.name = 'roads-bridge-decks'; m.userData.ptMaterial = PT.asphalt;
       out.push(m);
       tris += (dg.index?.count ?? 0) / 3;
     }
     const sg = st.build();
     if (sg) {
       const m = new THREE.Mesh(sg, mats.struct);
-      m.receiveShadow = true; m.castShadow = true; m.name = 'roads-bridge-structures';
+      m.receiveShadow = true; m.castShadow = true; m.name = 'roads-bridge-structures'; m.userData.ptMaterial = PT.concrete;
       out.push(m);
       tris += (sg.index?.count ?? 0) / 3;
     }

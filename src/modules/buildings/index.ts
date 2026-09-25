@@ -6,9 +6,9 @@
 // Colliders: prisms from footprints (ctx.registerColliders).
 import * as THREE from 'three';
 import type { AppContext, CityModule, StaticCollider } from '../../core/context';
-import { fetchBuffer, fetchJSON } from '../../core/data';
+import { fetchBuffer, fetchJSON, dataUrl } from '../../core/data';
 import { parseBuildings, decodeRings, type BuildingData, Rec, REC_SIZE, R, TYP_NAMES, FLAG } from './format';
-import { floorBase, type TileMesh } from './mesher';
+import { floorBase, fenceEnds, type TileMesh } from './mesher';
 import { createBuildingMaterial, makeUniforms, loadNoise, type BuildingUniforms } from './material';
 
 export interface BuildingInfo {
@@ -39,23 +39,24 @@ export interface BuildingsAPI {
   ready: Promise<void>;
 }
 
-const TILE_DETAIL_RADIUS: Record<string, number> = { low: 220, medium: 420, high: 650, ultra: 900 };
+const TILE_DETAIL_RADIUS: Record<string, number> = { low: 200, medium: 400, high: 560, ultra: 800 };
 const GRID = 64; // spatial index cell (m)
 
-interface TileState {
-  id: number;
-  cx: number; cz: number;
-  count: number;
-  base: THREE.Mesh | null;
-  det: THREE.Mesh | null;
-  detWanted: boolean;
-  detPending: boolean;
-  basePending: boolean;
-  version: number;       // bumped when hidden set changes
-  detVersion: number;
-  baseVersion: number;
-  box: THREE.Box3;
+/** A unit of meshing: base chunks cover 2x2 data tiles (1024 m), detail chunks one data tile (512 m). */
+interface Chunk {
+  key: string;
+  tiles: number[];
+  cx: number; cz: number;   // mesh origin (centre)
+  half: number;             // half size (m)
+  detail: boolean;
+  mesh: THREE.Mesh | null;
+  wanted: boolean;
+  pending: boolean;
+  version: number;          // bumped when the hidden set changes
+  built: number;            // version of the installed mesh
 }
+
+const BASE_GROUP = 2; // data tiles per base chunk side
 
 class WorkerPool {
   private workers: Worker[] = [];
@@ -64,16 +65,17 @@ class WorkerPool {
   private waiting = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void; w: number }>();
   private nextId = 1;
 
-  constructor(n: number, init: (w: Worker) => void) {
+  constructor(n: number) {
     for (let i = 0; i < n; i++) {
       const w = new Worker(new URL('../../workers/buildings.worker.ts', import.meta.url), { type: 'module' });
       w.onmessage = (e) => this.onMessage(i, e.data);
       w.onerror = (e) => console.error('[buildings] worker error', e.message);
-      init(w);
       this.workers.push(w);
       this.busy.push(false);
     }
   }
+
+  each(fn: (w: Worker, i: number) => void): void { this.workers.forEach(fn); }
 
   get size(): number { return this.workers.length; }
 
@@ -125,6 +127,7 @@ function geometryFrom(m: TileMesh): THREE.BufferGeometry {
   g.setAttribute('aA', new THREE.BufferAttribute(m.aA, 4, false));
   g.setAttribute('aC', new THREE.BufferAttribute(m.aC, 4, true));
   g.setAttribute('aW', new THREE.BufferAttribute(m.aW, 4, false));
+  g.setAttribute('color', new THREE.BufferAttribute(m.color, 3, true));
   g.setIndex(new THREE.BufferAttribute(m.index, 1));
   const b = m.bbox;
   g.boundingBox = new THREE.Box3(new THREE.Vector3(b[0], b[1], b[2]), new THREE.Vector3(b[3], b[4], b[5]));
@@ -147,10 +150,14 @@ class Buildings {
   rec!: Rec;
   meta: any = {};
   ground!: Float32Array; // gMin, gMax per building
+  fground: Float32Array = new Float32Array(0); // ground at both ends of each fence
   hidden!: Uint8Array;
-  tiles = new Map<number, TileState>();
+  base = new Map<number, Chunk>();   // key: base chunk index
+  detail = new Map<number, Chunk>(); // key: data tile index
   group = new THREE.Group();
   mat!: THREE.MeshStandardMaterial;
+  /** proxy for the path tracer: per-vertex average albedo */
+  ptMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 });
   u: BuildingUniforms = makeUniforms();
   pool!: WorkerPool;
   gridStart!: Uint32Array;
@@ -168,13 +175,24 @@ class Buildings {
 
   constructor(private ctx: AppContext) {}
 
+  private t0 = performance.now();
+  private timing: Record<string, number> = {};
+  private mark(k: string): void { this.timing[k] = Math.round(performance.now() - this.t0); }
+
   async init(): Promise<void> {
     const ctx = this.ctx;
+    this.t0 = performance.now();
+    // worker pool first: the data file is fetched and gunzipped inside a worker
+    const nw = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
+    this.pool = new WorkerPool(nw);
+    const url = new URL(dataUrl('buildings/buildings.bin.gz'), location.href).href;
     const [buf, meta, noise] = await Promise.all([
-      fetchBuffer('buildings/buildings.bin.gz'),
+      this.pool.run({ type: 'fetch', url }, () => 0).then((r) => r.buf as ArrayBuffer)
+        .catch((e) => { console.warn('[buildings] worker fetch failed, falling back', e); return fetchBuffer('buildings/buildings.bin.gz'); }),
       fetchJSON('buildings/meta.json').catch(() => ({})),
       loadNoise(`${import.meta.env.BASE_URL}textures/buildings/noise.png`).catch((e) => { console.warn('[buildings] noise texture', e); return null; }),
     ]);
+    this.mark('fetched');
     this.meta = meta;
     this.d = parseBuildings(buf);
     this.rec = new Rec(this.d);
@@ -188,22 +206,31 @@ class Buildings {
     this.buildIndex();
     this.hidden = new Uint8Array(this.d.n);
     const t1 = performance.now();
-    // worker pool (each worker gets its own copy of the dataset)
-    const nw = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
-    this.pool = new WorkerPool(nw, (w) => {
-      w.postMessage({ type: 'init', buf: buf.slice(0), ground: this.ground.slice(0), hidden: this.hidden.slice(0) });
+    this.mark('ground');
+    // each worker gets its own copy of the dataset + ground heights
+    this.pool.each((w) => {
+      w.postMessage({ type: 'init', buf: buf.slice(0), ground: this.ground.slice(0), hidden: this.hidden.slice(0), fground: this.fground.slice(0) });
     });
-    for (let t = 0; t < this.d.nTiles; t++) {
-      const cnt = this.d.tileStart[t + 1] - this.d.tileStart[t];
+    const d = this.d, tx = d.tilesX, gN = Math.ceil(tx / BASE_GROUP);
+    for (let t = 0; t < d.nTiles; t++) {
+      const cnt = d.tileStart[t + 1] - d.tileStart[t];
       if (!cnt) continue;
-      const tx = t % this.d.tilesX, tz = Math.floor(t / this.d.tilesX);
-      const cx = this.d.originX + (tx + 0.5) * this.d.tileSize, cz = this.d.originZ + (tz + 0.5) * this.d.tileSize;
-      this.tiles.set(t, {
-        id: t, cx, cz, count: cnt, base: null, det: null, detWanted: false, detPending: false, basePending: false,
-        version: 0, detVersion: -1, baseVersion: -1, box: new THREE.Box3(),
+      const x = t % tx, z = Math.floor(t / tx);
+      this.detail.set(t, {
+        key: `d${t}`, tiles: [t], cx: d.originX + (x + 0.5) * d.tileSize, cz: d.originZ + (z + 0.5) * d.tileSize,
+        half: d.tileSize / 2, detail: true, mesh: null, wanted: false, pending: false, version: 0, built: -1,
       });
+      const gx = Math.floor(x / BASE_GROUP), gz = Math.floor(z / BASE_GROUP), g = gz * gN + gx;
+      let c = this.base.get(g);
+      if (!c) {
+        const size = d.tileSize * BASE_GROUP;
+        c = { key: `b${g}`, tiles: [], cx: d.originX + (gx + 0.5) * size, cz: d.originZ + (gz + 0.5) * size,
+          half: size / 2, detail: false, mesh: null, wanted: true, pending: false, version: 0, built: -1 };
+        this.base.set(g, c);
+      }
+      c.tiles.push(t);
     }
-    console.info(`[buildings] ${this.d.n} buildings in ${this.tiles.size} tiles; ground+index ${(t1 - t0).toFixed(0)} ms; ${nw} workers`);
+    console.info(`[buildings] ${this.d.n} buildings in ${this.detail.size} tiles / ${this.base.size} base chunks; ground+index ${(t1 - t0).toFixed(0)} ms; ${nw} workers`);
     this.idsPromise = this.loadIds();
     ctx.events.on('settings', () => this.updateDetailRadius());
   }
@@ -214,10 +241,23 @@ class Buildings {
     this.updateDetailRadius();
     const cam = ctx.camera.position;
     const detJobs = this.updateLod(true);
-    const baseJobs = [...this.tiles.values()].map((t) => this.buildBase(t));
+    // base chunks sorted by distance, dealt round-robin into a few large batches (one reply each)
+    const p = ctx.camera.position;
+    const all = [...this.base.values()].sort((a, b) => Math.hypot(a.cx - p.x, a.cz - p.z) - Math.hypot(b.cx - p.x, b.cz - p.z));
+    const nb = this.pool.size; // one reply per worker
+    const batches: Chunk[][] = Array.from({ length: nb }, () => []);
+    all.forEach((c, i) => batches[i % nb].push(c));
+    const baseJobs = batches.filter((b) => b.length).map((b) => this.buildBatch(b));
     void cam;
+    this.mark('queued');
     await Promise.all([...baseJobs, ...detJobs]);
+    this.mark('meshed');
     this.initialDone = true;
+    let tris = 0;
+    for (const c of this.base.values()) if (c.mesh) tris += (c.mesh.geometry.index?.count ?? 0) / 3;
+    let dtris = 0;
+    for (const c of this.detail.values()) if (c.mesh) dtris += (c.mesh.geometry.index?.count ?? 0) / 3;
+    console.info(`[buildings] timing(ms) ${JSON.stringify(this.timing)}; base ${Math.round(tris / 1000)}k tris, detail ${Math.round(dtris / 1000)}k tris`);
   }
 
   /** Minimal lighting for isolated tests (?only=buildings) when the sky module is not loaded. */
@@ -291,6 +331,16 @@ class Buildings {
       this.bboxes[4 * i] = bx0; this.bboxes[4 * i + 1] = bz0; this.bboxes[4 * i + 2] = bx1; this.bboxes[4 * i + 3] = bz1;
     }
     this.ground = g;
+    // fences: ground at both ends
+    const fg = new Float32Array(d.nFences * 2);
+    for (let t = 0; t < d.nTiles; t++) {
+      for (let f = d.fenceStart[t]; f < d.fenceStart[t + 1]; f++) {
+        const [x0, z0, x1, z1] = fenceEnds(d, f, t);
+        fg[2 * f] = hf.sample(x0, z0);
+        fg[2 * f + 1] = hf.sample(x1, z1);
+      }
+    }
+    this.fground = fg;
   }
 
   private buildIndex(): void {
@@ -347,64 +397,64 @@ class Buildings {
   }
 
   // ------------------------------------------------------------------ tile building
-  private buildBase(t: TileState): Promise<void> {
-    if (t.basePending) return Promise.resolve();
-    t.basePending = true;
-    const ver = t.version;
-    return this.pool.run({ type: 'build', tile: t.id, detail: false }, () => this.tilePriority(t, 0))
-      .then((res) => {
-        t.basePending = false;
-        this.installMesh(t, res.base, false);
-        t.baseVersion = ver;
-        if (t.version !== ver) return this.buildBase(t);
-      })
-      .catch((e) => { t.basePending = false; console.warn('[buildings] tile build failed', t.id, e); });
+  private build(c: Chunk): Promise<void> {
+    return this.buildBatch([c]);
   }
 
-  private buildDetail(t: TileState): Promise<void> {
-    if (t.detPending) return Promise.resolve();
-    t.detPending = true;
-    const ver = t.version;
-    return this.pool.run({ type: 'build', tile: t.id, detail: true }, () => this.tilePriority(t, -1e6))
+  /** Build several chunks in one worker round-trip (results install together). */
+  private buildBatch(list: Chunk[]): Promise<void> {
+    const cs = list.filter((c) => !c.pending);
+    if (!cs.length) return Promise.resolve();
+    for (const c of cs) c.pending = true;
+    const vers = cs.map((c) => c.version);
+    const jobs = cs.map((c) => ({ key: c.key, tiles: c.tiles, ox: c.cx, oz: c.cz, detail: c.detail }));
+    const prio = () => Math.min(...cs.map((c) => this.priority(c)));
+    return this.pool.run({ type: 'build', jobs }, prio)
       .then((res) => {
-        t.detPending = false;
-        if (!t.detWanted) return;
-        this.installMesh(t, res.det, true);
-        t.detVersion = ver;
-        if (t.version !== ver) return this.buildDetail(t);
+        const again: Chunk[] = [];
+        if (!this.initialDone) this.timing[`batch${Object.keys(this.timing).length}`] = Math.round(performance.now() - this.t0) * 1000 + Math.round(res.ms);
+        res.results.forEach((r: any, k: number) => {
+          const c = cs[k];
+          c.pending = false;
+          if (!c.wanted) return;
+          this.install(c, r.mesh);
+          c.built = vers[k];
+          if (c.version !== vers[k]) again.push(c);
+        });
+        if (again.length) return this.buildBatch(again);
       })
-      .catch((e) => { t.detPending = false; console.warn('[buildings] detail build failed', t.id, e); });
+      .catch((e) => { for (const c of cs) c.pending = false; console.warn('[buildings] build failed', cs.map((c) => c.key).join(','), e); });
   }
 
-  private tilePriority(t: TileState, bias: number): number {
+  private priority(c: Chunk): number {
     const p = this.ctx.camera.position;
-    return Math.hypot(t.cx - p.x, t.cz - p.z) + bias;
+    const d = Math.hypot(c.cx - p.x, c.cz - p.z);
+    return c.detail ? d - 1e6 : d; // detail first (it is what the camera is close to)
   }
 
-  private installMesh(t: TileState, m: TileMesh | null, detail: boolean): void {
-    const old = detail ? t.det : t.base;
-    if (old) {
-      this.group.remove(old);
-      old.geometry.dispose();
+  private install(c: Chunk, m: TileMesh | null): void {
+    if (c.mesh) {
+      this.group.remove(c.mesh);
+      c.mesh.geometry.dispose();
+      c.mesh = null;
     }
-    if (!m || m.index.length === 0) {
-      if (detail) t.det = null; else t.base = null;
-      return;
-    }
+    if (!m || m.index.length === 0) return;
     const g = geometryFrom(m);
     const mesh = new THREE.Mesh(g, this.mat);
-    mesh.position.set(t.cx, 0, t.cz);
+    mesh.position.set(c.cx, 0, c.cz);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.name = `${detail ? 'bld-detail' : 'bld'}-${t.id}`;
-    mesh.userData.buildingsTile = t.id;
+    mesh.name = `bld-${c.key}`;
+    mesh.userData.ptMaterial = this.ptMat;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     this.group.add(mesh);
-    if (detail) t.det = mesh; else {
-      t.base = mesh;
-      t.box.copy(g.boundingBox!).translate(mesh.position);
-    }
+    c.mesh = mesh;
+  }
+
+  private dropMesh(c: Chunk): void {
+    if (c.mesh) { this.group.remove(c.mesh); c.mesh.geometry.dispose(); c.mesh = null; }
+    c.built = -1;
   }
 
   // ------------------------------------------------------------------ LOD / streaming
@@ -417,20 +467,28 @@ class Buildings {
     this.u.uDetailDist.value = radius;
     const drawDist = ctx.settings.profile.drawDistance;
     const jobs: Promise<void>[] = [];
-    for (const t of this.tiles.values()) {
-      const half = this.d.tileSize / 2;
-      const dx = Math.max(0, Math.abs(p.x - t.cx) - half), dz = Math.max(0, Math.abs(p.z - t.cz) - half);
-      const dist = Math.hypot(dx, dz);
-      const want = dist < radius;
-      if (want && !t.detWanted) {
-        t.detWanted = true;
-        if (!t.det || t.detVersion !== t.version) jobs.push(this.buildDetail(t));
-      } else if (!want && t.detWanted && dist > radius + 150) {
-        t.detWanted = false;
-        if (t.det) { this.group.remove(t.det); t.det.geometry.dispose(); t.det = null; }
+    const dist = (c: Chunk) => Math.hypot(Math.max(0, Math.abs(p.x - c.cx) - c.half), Math.max(0, Math.abs(p.z - c.cz) - c.half));
+    const todo: Chunk[] = [];
+    for (const c of this.detail.values()) {
+      const dd = dist(c);
+      if (dd < radius) {
+        if (!c.wanted) c.wanted = true;
+        if (c.built !== c.version && !c.pending) todo.push(c);
+      } else if (c.wanted && dd > radius + 150) {
+        c.wanted = false;
+        this.dropMesh(c);
       }
-      if (t.base) t.base.visible = dist < drawDist;
-      if (t.det) t.det.visible = t.detWanted;
+    }
+    if (todo.length) {
+      // split across the workers, nearest first
+      todo.sort((a, b) => dist(a) - dist(b));
+      const nb = Math.min(todo.length, this.pool.size);
+      const batches: Chunk[][] = Array.from({ length: nb }, () => []);
+      todo.forEach((c, i) => batches[i % nb].push(c));
+      for (const bt of batches) jobs.push(this.buildBatch(bt));
+    }
+    for (const c of this.base.values()) {
+      if (c.mesh) c.mesh.visible = dist(c) < drawDist;
     }
     if (jobs.length && !force) this.ctx.pending(Promise.all(jobs));
     return jobs;
@@ -445,7 +503,7 @@ class Buildings {
     this.u.uTime.value = env.elapsed;
     const h = env.hours;
     // share of lit windows: evening peak, low after midnight
-    const lit = h >= 17 || h < 1 ? 0.55 : h < 5 ? 0.12 : h < 8 ? 0.3 : 0.4;
+    const lit = h >= 17 && h < 22 ? 0.42 : h >= 22 || h < 1 ? 0.3 : h < 5 ? 0.08 : h < 8 ? 0.22 : 0.3;
     this.u.uLitFrac.value = lit;
     // fake reflection colours follow the sun
     const day = this.u.uDay.value;
@@ -477,13 +535,20 @@ class Buildings {
     if (!affected.size) return;
     this.pool.broadcast({ type: 'hidden', hidden: this.hidden.slice(0) });
     const jobs: Promise<void>[] = [];
-    for (const id of affected) {
-      const t = this.tiles.get(id);
-      if (!t) continue;
-      t.version++;
-      jobs.push(this.buildBase(t));
-      if (t.detWanted) jobs.push(this.buildDetail(t));
+    const gN = Math.ceil(this.d.tilesX / BASE_GROUP);
+    const groups = new Set<number>();
+    for (const t of affected) {
+      const x = t % this.d.tilesX, z = Math.floor(t / this.d.tilesX);
+      groups.add(Math.floor(z / BASE_GROUP) * gN + Math.floor(x / BASE_GROUP));
+      const c = this.detail.get(t);
+      if (c) { c.version++; if (c.wanted) jobs.push(this.build(c)); }
     }
+    const bl: Chunk[] = [];
+    for (const g of groups) {
+      const c = this.base.get(g);
+      if (c) { c.version++; bl.push(c); }
+    }
+    if (bl.length) jobs.push(this.buildBatch(bl));
     this.ctx.pending(Promise.all(jobs));
   }
 
@@ -637,8 +702,7 @@ const mod: CityModule & { inst?: Buildings } = {
     ctx.provide('buildings', api);
     ctx.registerColliders({ id: 'buildings', query: (x, z, r) => b.colliders(x, z, r) });
     (window as any).__buildings = b;
-    // phase 2: meshing (let other modules' init run first so their hide calls land before the workers start)
-    await new Promise((r) => setTimeout(r, 0));
+    // phase 2: meshing (hide calls that arrive later only rebuild the affected chunks)
     const work = b.mesh().then(() => readyRes());
     ctx.pending(work);
     await work;

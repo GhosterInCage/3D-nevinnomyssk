@@ -158,16 +158,18 @@ cls[track_r] = C["bare"]
 cls[rail_r] = C["gravel"]
 cls[ndimage.binary_dilation(bmask5, disk(1))] = C["urban"]
 # water beds and shores
-river_like = (near_type5 == 1) | (near_type5 == 4)
+river_like = near_type5 == 1                       # Kuban / Zelenchuk: gravel-bed mountain rivers
+stream = near_type5 == 4                           # steppe streams and ditches: muddy, grassy banks
 still = (near_type5 == 5) | (near_type5 == 6)
 canal = near_type5 == 3
 shore = (~wet5) & (d_water5 < 9)
 cls[shore & river_like & (d_water5 < 6)] = C["pebbles"]
 cls[shore & river_like & (d_water5 >= 6) & (nd5 < 0.45)] = C["sand"]
 cls[shore & still & (d_water5 < 4)] = C["mud"]
+cls[shore & stream & (d_water5 < 2.5)] = C["mud"]
 cls[shore & canal & (d_water5 < 3)] = C["gravel"]
 cls[wet5 & river_like] = C["pebbles"]
-cls[wet5 & (still | canal)] = C["mud"]
+cls[wet5 & (still | canal | stream)] = C["mud"]
 cls[bars5] = C["pebbles"]
 print("classes", {n: round(float((cls == i).mean()) * 100, 2) for n, i in C.items()}, f"{time.time()-t0:.1f}s")
 

@@ -16,6 +16,8 @@ export interface BufferConfig {
   lutD: number;
   /** cloud buffer resolution divisor (2 = half resolution) */
   cloudDiv: number;
+  /** jittered sub-samples accumulated per frame */
+  cloudSubs: number;
 }
 
 export const LUT_D0 = 8;
@@ -33,6 +35,7 @@ export class SkyBuffersPass extends Pass {
   readonly skInvProj: THREE.Uniform<THREE.Matrix4>;
   readonly lutTex = new THREE.Uniform<THREE.Texture | null>(null);
   cloudsEnabled = true;
+  private prevClear = new THREE.Color();
   private width = 1;
   private height = 1;
 
@@ -69,11 +72,17 @@ export class SkyBuffersPass extends Pass {
     this.cloudMat = new THREE.ShaderMaterial({
       vertexShader: fullscreenVert,
       fragmentShader: cloudPassFrag,
-      uniforms: { ...common, uSize: { value: new THREE.Vector2(1, 1) }, skApLut: this.lutTex },
+      uniforms: { ...common, uSize: { value: new THREE.Vector2(1, 1) }, skApLut: this.lutTex, uSub: { value: 0 }, uSubCount: { value: 1 } },
       defines: atmosphereDefines(),
       depthTest: false,
       depthWrite: false,
       toneMapped: false,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneFactor,
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.lutMat);
     this.quad.frustumCulled = false;
@@ -111,6 +120,7 @@ export class SkyBuffersPass extends Pass {
   }
 
   get cloudColor(): THREE.Texture { return this.cloudRT.textures[0]; }
+  readonly cloudTexel = new THREE.Vector2(1, 1);
   get cloudDist(): THREE.Texture { return this.cloudRT.textures[1]; }
 
   override setSize(width: number, height: number): void {
@@ -118,6 +128,7 @@ export class SkyBuffersPass extends Pass {
     const w = Math.max(1, Math.ceil(width / this.cfg.cloudDiv));
     const h = Math.max(1, Math.ceil(height / this.cfg.cloudDiv));
     this.cloudRT.setSize(w, h);
+    this.cloudTexel.set(1 / w, 1 / h);
     (this.cloudMat.uniforms.uSize.value as THREE.Vector2).set(w, h);
   }
 
@@ -139,7 +150,17 @@ export class SkyBuffersPass extends Pass {
     if (this.cloudsEnabled) {
       this.quad.material = this.cloudMat;
       renderer.setRenderTarget(this.cloudRT);
-      renderer.render(this.quadScene, this.quadCam);
+      renderer.getClearColor(this.prevClear);
+      const prevAlpha = renderer.getClearAlpha();
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear(true, false, false);
+      renderer.setClearColor(this.prevClear, prevAlpha);
+      const n = Math.max(1, this.cfg.cloudSubs | 0);
+      this.cloudMat.uniforms.uSubCount.value = n;
+      for (let k = 0; k < n; k++) {
+        this.cloudMat.uniforms.uSub.value = k;
+        renderer.render(this.quadScene, this.quadCam);
+      }
     }
     renderer.setRenderTarget(null);
     renderer.autoClear = prevAuto;

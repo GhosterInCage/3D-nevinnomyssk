@@ -1,7 +1,7 @@
 // Ground material: MeshStandardMaterial patched with the CDLOD vertex stage and the splatted
 // ground shader, so lights, shadows (incl. CSM), fog and tone mapping keep working.
 import * as THREE from 'three';
-import { FRAG_AO, FRAG_MAIN, FRAG_NORMAL, FRAG_PARS, FRAG_ROUGH, VERT_MAIN, VERT_PARS } from './shaders';
+import { FRAG_AO, FRAG_MAIN, FRAG_NORMAL, FRAG_PARS, FRAG_ROUGH, HAZE_PARS, VERT_MAIN, VERT_PARS } from './shaders';
 
 export type Uniforms = Record<string, THREE.IUniform>;
 
@@ -43,13 +43,14 @@ export function createGroundMaterial(uniforms: Uniforms, defines: Record<string,
     Object.assign(shader.uniforms, uniforms);
     patchVertex(shader, true);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\n${FRAG_PARS}`)
+      .replace('#include <common>', `#include <common>\n${FRAG_PARS.replace('#include <terrain_haze_pars>', HAZE_PARS)}`)
       .replace('#include <map_fragment>', FRAG_MAIN)
+      .replace('#include <tonemapping_fragment>', 'if (uHazeOn > 0.5) gl_FragColor.rgb = hzApply(gl_FragColor.rgb, cameraPosition, vTW);\n#include <tonemapping_fragment>')
       .replace('#include <roughnessmap_fragment>', FRAG_ROUGH)
       .replace('#include <normal_fragment_maps>', FRAG_NORMAL)
       .replace('#include <aomap_fragment>', FRAG_AO);
   });
-  mat.customProgramCacheKey = () => 'terrain-ground-v1';
+  mat.customProgramCacheKey = () => `terrain-ground-v1${defines.TERRAIN_LITE ? '-lite' : ''}`;
   return mat;
 }
 

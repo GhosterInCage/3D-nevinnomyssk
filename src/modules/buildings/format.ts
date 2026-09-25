@@ -3,7 +3,7 @@
 //
 // Header (64 bytes, little-endian):
 //   0 'NBLD'  4 u32 version  8 u32 nBuildings  12 u32 nVerts  16 u32 nRings  20 u32 nParts
-//  24 f32 tileSize  28 u32 tilesX  32 f32 originX  36 f32 originZ  40 u32 nTiles  44..63 reserved
+//  24 f32 tileSize  28 u32 tilesX  32 f32 originX  36 f32 originZ  40 u32 nTiles  44 u32 nFences (v2)  48..63 reserved
 // Sections (4-byte aligned, in order):
 //   tileStart  u32[nTiles + 1]         buildings are sorted by tile (tile = tz * tilesX + tx)
 //   records    REC_SIZE * nBuildings   (see field offsets below)
@@ -15,9 +15,13 @@
 //   parts      PART_SIZE * nParts       roof rectangles: i16 cx, i16 cz (cm rel. centre),
 //                                       u16 halfLen, u16 halfWid (cm), i16 angle (1e-4 rad, ridge
 //                                       direction in world x/z: (cos a, sin a)), u16 reserved
+//   fenceStart u32[nTiles + 1]          (v2) plot fences sorted by tile
+//   fences     FENCE_SIZE * nFences     i16 x0, z0, x1, z1 (cm rel. tile centre), u8 type, u8 height dm,
+//                                       u8 rgb[3], u8 seed, u16 reserved
 
 export const REC_SIZE = 52;
 export const PART_SIZE = 12;
+export const FENCE_SIZE = 16;
 
 export const R = {
   cx: 0, cz: 4, vertStart: 8, ringStart: 12, partStart: 16,
@@ -89,6 +93,9 @@ export interface BuildingData {
   verts: Int16Array;
   ringLen: Uint16Array;
   partsOff: number;
+  nFences: number;
+  fenceStart: Uint32Array;
+  fenceOff: number;
 }
 
 export function parseBuildings(buf: ArrayBuffer): BuildingData {
@@ -116,8 +123,19 @@ export function parseBuildings(buf: ArrayBuffer): BuildingData {
   o = (o + 3) & ~3;
   const partsOff = o;
   o += PART_SIZE * nParts;
+  const version = dv.getUint32(4, true);
+  let nFences = 0;
+  let fenceStart = new Uint32Array(nTiles + 1);
+  let fenceOff = o;
+  if (version >= 2) {
+    nFences = dv.getUint32(44, true);
+    fenceStart = new Uint32Array(buf, o, nTiles + 1);
+    o += 4 * (nTiles + 1);
+    fenceOff = o;
+    o += FENCE_SIZE * nFences;
+  }
   if (o > buf.byteLength) throw new Error('buildings.bin: truncated');
-  return { buf, dv, n, nTiles, tilesX, tileSize, originX, originZ, tileStart, recOff, verts, ringLen, partsOff };
+  return { buf, dv, n, nTiles, tilesX, tileSize, originX, originZ, tileStart, recOff, verts, ringLen, partsOff, nFences, fenceStart, fenceOff };
 }
 
 /** Lightweight accessor for one building record. */

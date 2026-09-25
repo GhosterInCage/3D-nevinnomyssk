@@ -45,7 +45,7 @@ varying vec2 vUvB;
 varying vec3 vWPos;
 varying vec3 vWNrm;
 
-vec3 bAlbedo; float bRough; float bMetal; vec3 bN; vec3 bEmis; float bAO;
+vec3 bAlbedo; float bRough; float bMetal; vec3 bN; vec3 bEmis; float bAO; float bGlass; float bLitId;
 
 float bh11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 float bh21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
@@ -95,11 +95,11 @@ vec3 bInterior(vec3 o, vec3 d, float w, float h, float depth, float rnd, float l
     col = wallpaper * 0.85;
   }
   // light: daylight falls off with depth; artificial light from the ceiling
-  float dayL = uDay * (0.10 + 0.22 * exp(-dist * 0.45));
+  float dayL = uDay * (0.018 + 0.05 * exp(-dist * 0.5));
   vec3 lampC = mix(vec3(1.0, 0.72, 0.42), vec3(0.95, 0.93, 0.88), step(0.7, bh11(rnd * 8.8)));
   if (bh11(rnd * 6.6) > 0.93) lampC = vec3(0.55, 0.65, 1.0); // TV glow
   float lamp = lit * (0.55 + 0.45 * smoothstep(h, 0.0, length(p - vec3(w * 0.5, h, -depth * 0.5)) * 0.6));
-  return col * (dayL + lamp * lampC * 1.6);
+  return col * (dayL + lamp * lampC * 0.55);
 }
 
 // ------------------------------------------------------------ one window (opening + recessed glass)
@@ -116,6 +116,9 @@ float bWindow(vec2 f, vec4 win, vec3 Vt, vec3 room, float rid, float px, float f
     nT = normalize(vec3(0.0, -0.6, 1.0));
     return 0.0;
   }
+  // dark sealant / shadow line around the opening
+  float ring = bRect(f, win.xy - 0.025, win.zw + 0.025, px * 0.7) * (1.0 - inOpen);
+  alb = mix(alb, alb * 0.45, ring * 0.8);
   if (inOpen < 0.01) return 0.0;
   float depth = 0.2;
   vec2 gp = f;
@@ -155,23 +158,23 @@ float bWindow(vec2 f, vec4 win, vec3 Vt, vec3 room, float rid, float px, float f
   // curtains / tulle (in glass-plane coords)
   float cl = 0.35 * bh11(rid * 3.7), cr = 0.35 * bh11(rid * 5.3);
   float curtain = step(lp.x, sz.x * cl) + step(sz.x * (1.0 - cr), lp.x);
-  float tulle = step(0.35, bh11(rid * 9.1)) * 0.75;
+  float tulle = step(0.5, bh11(rid * 9.1)) * 0.6;
   vec3 curtainCol = mix(vec3(0.75, 0.68, 0.52), vec3(0.45, 0.18, 0.14), step(0.7, bh11(rid * 2.1)));
   curtainCol = mix(curtainCol, vec3(0.35, 0.45, 0.35), step(0.88, bh11(rid * 4.9)));
   // lit at night?
-  float lit = step(bh11(rid * 1.37 + 0.5), uLitFrac) * uNight;
+  float lit = step(bLitId, uLitFrac) * uNight;
   // interior
   vec3 o = vec3(gp.x - (win.x + win.z) * 0.5 + room.x * 0.5, gp.y + room.z, 0.0);
   vec3 dir = -Vt;
   float dist;
   vec3 inter;
   if (uDetail > 0.5 && px < 0.08) inter = bInterior(o, dir, room.x, room.y, 4.5, rid, lit, dist);
-  else inter = vec3(0.35, 0.3, 0.25) * (uDay * 0.12 + lit * 1.2);
+  else inter = vec3(0.35, 0.3, 0.25) * (uDay * 0.06 + lit * 0.45);
   vec3 lampC = mix(vec3(1.0, 0.72, 0.42), vec3(0.95, 0.93, 0.88), step(0.7, bh11(rid * 8.8)));
   // tulle diffuses daylight / lamp light
-  vec3 tulleCol = vec3(0.85, 0.84, 0.80) * (uDay * 0.35 + lit * lampC * 1.4);
+  vec3 tulleCol = vec3(0.85, 0.84, 0.80) * (uDay * 0.07 + lit * lampC * 0.5);
   inter = mix(inter, tulleCol, tulle);
-  vec3 curt = curtainCol * (uDay * 0.3 + lit * lampC * 0.9);
+  vec3 curt = curtainCol * (uDay * 0.06 + lit * lampC * 0.35);
   inter = mix(inter, curt, clamp(curtain, 0.0, 1.0));
   // glass: dark, glossy, slightly tilted per pane (varied reflections)
   vec2 tilt = (bh22(vec2(rid, rid * 1.3)) - 0.5) * 0.06;
@@ -184,7 +187,11 @@ float bWindow(vec2 f, vec4 win, vec3 Vt, vec3 room, float rid, float px, float f
   rough = mix(mix(rough, 0.04 + 0.05 * bh11(rid), inOpen), 0.5, isFrame * inOpen);
   metal = mix(metal, 0.0, inOpen);
   nT = normalize(mix(nT, gN, inOpen * (1.0 - isFrame)));
+  // the head of the opening shades the top of the pane
+  float headShade = mix(0.55, 1.0, smoothstep(0.0, 0.35, win.w - gp.y));
   emis += glassEmis * inOpen * (1.0 - isFrame);
+  bGlass = inOpen * (1.0 - isFrame) * headShade;
+  ao *= mix(1.0, headShade, inOpen);
   ao *= mix(1.0, 0.9, inOpen);
   return inOpen;
 }
@@ -199,7 +206,7 @@ void bSurface() {
   float levels = vA.w;
   vec3 N = normalize(vWNrm);
   vec3 base = bLin(vC.rgb);
-  bAlbedo = base; bRough = 0.85; bMetal = 0.0; bN = N; bEmis = vec3(0.0); bAO = 1.0;
+  bAlbedo = base; bRough = 0.85; bMetal = 0.0; bN = N; bEmis = vec3(0.0); bAO = 1.0; bGlass = 0.0; bLitId = 1.0;
   vec3 V = normalize(cameraPosition - vWPos);
   float distCam = length(cameraPosition - vWPos);
   vec2 p = vUvB;
@@ -225,12 +232,19 @@ void bSurface() {
       float frameType = ft < 0.5 ? 0.3 : ft < 1.5 ? 0.7 : ft < 2.5 ? 0.9 : 0.99;
       float cw = 0.75;
       float cx = floor(p.x / cw);
+      bLitId = bh21(vec2(floor(vWPos.x * 0.3) + floor(vWPos.z * 0.3), floor(vWPos.y / 2.8)));
       vec2 f = vec2(p.x - cx * cw, p.y);
       float hgt = 1.4;
       vec4 win = vec4(0.0, 0.0, cw, 5.0);
       bWindow(f, win, Vt, vec3(cw * 3.0, 2.6, 0.9), bh21(vec2(cx, seed) + floor(vWPos.y / 2.8) * 7.0), px, frameType, 1.0, false, alb, alb, rough, metal, nT, emis, ao);
       alb = mix(alb, vec3(0.2, 0.2, 0.2), 0.0);
       vec3 Nw = normalize(T * nT.x + B * nT.y + N * nT.z);
+#ifndef USE_ENVMAP
+      if (bGlass > 0.0) {
+        float Fr = 0.04 + 0.96 * pow(1.0 - clamp(dot(V, Nw), 0.0, 1.0), 5.0);
+        emis += bSky(reflect(-V, Nw)) * Fr * bGlass;
+      }
+#endif
       bAlbedo = alb; bRough = rough; bMetal = metal; bN = Nw; bEmis = emis; bAO = ao;
       return;
     }
@@ -280,7 +294,9 @@ void bSurface() {
       float patchV = step(0.55, bh21(vec2(pcol, seed))) * bBox(f.x, -0.07, 0.07, px) ;
       float patchH = step(0.6, bh21(vec2(prow, seed + 3.0))) * bBox(f.y, -0.06, 0.06, px);
       float hp = bh21(vec2(pcol, prow) + seed * 0.1);
-      vec3 pc = base * (0.93 + 0.1 * hp) * (0.95 + 0.1 * nf.b);
+      vec3 pc = base * (0.9 + 0.14 * hp) * (0.88 + 0.24 * nf.b);
+      // weathered panels: darker lower edges and rust stains from the joints
+      pc *= 1.0 - 0.08 * smoothstep(0.4, 0.0, f.y) ;
       // tiled finish on some series: fine grid
       if (style == 5.0 && bh11(seed + 2.0) > 0.5) {
         vec2 tg = fract(p / 0.05);
@@ -369,6 +385,10 @@ void bSurface() {
     wh = min(wh, floorH - sill - 0.25);
     bool stair = entranceWall && secCols > 0.0 && mod(col, secCols) == floor(secCols * 0.5);
     float rid = bh21(vec2(col + 17.0 * floor(vWPos.x * 0.01) + seed, row * 13.0 + floor(vWPos.z * 0.01)));
+    // lights are switched per flat (~2 bays) and per building mood, not per window
+    float wallKey = floor(vWPos.x * 0.02) * 7.0 + floor(vWPos.z * 0.02) * 13.0;
+    bLitId = bh21(vec2(floor((col + mod(seed, 2.0)) / 2.0) + seed * 3.1, row * 7.0 + wallKey));
+    bLitId = clamp(bLitId + (bh11(seed * 5.3) - 0.5) * 0.35, 0.0, 1.0);
     float frameType = bh11(rid * 2.3 + seed * 0.01);
     if (bh11(seed + 9.0) < 0.35) frameType = 0.3; // renovated building: all white PVC
     vec3 wallCol = alb;
@@ -377,11 +397,11 @@ void bSurface() {
     float winFar = smoothstep(cellW * 0.12, cellW * 0.4, px);
     if (inGrid && winFar > 0.99) {
       float cover = (ww * wh) / (cellW * floorH);
-      float lit = step(bh11(rid * 1.37 + 0.5), uLitFrac) * uNight;
+      float lit = step(bLitId, uLitFrac) * uNight;
       vec3 winAvg = vec3(0.035, 0.04, 0.05);
       alb = mix(alb, winAvg, cover * 0.9);
       rough = mix(rough, 0.3, cover);
-      emis += vec3(1.0, 0.75, 0.45) * lit * cover * 1.1;
+      emis += vec3(1.0, 0.75, 0.45) * lit * cover * 0.45;
     } else if (inGrid) {
       vec3 Vtl = Vt;
       bool door = false;
@@ -403,8 +423,12 @@ void bSurface() {
         room = vec3(cellW, floorH, 0.0);
       }
       if (style == 10.0) door = false;
+      bool houseStyle = style == 1.0 || style == 2.0 || style == 15.0;
+      bool houseDoor = houseStyle && entranceWall && nCols >= 2.0 && col == nCols - 1.0 && row < 0.5;
+      if (houseDoor) door = true;
       if (door) {
-        vec4 dr = vec4((cellW - 1.3) * 0.5, 0.0, (cellW + 1.3) * 0.5, 2.15);
+        float dw = houseDoor ? 0.95 : 1.3;
+        vec4 dr = vec4((cellW - dw) * 0.5, 0.0, (cellW + dw) * 0.5, houseDoor ? 2.05 : 2.15);
         float inD = bRect(f, dr.xy, dr.zw, px);
         vec3 dc = mix(vec3(0.18, 0.16, 0.15), vec3(0.32, 0.24, 0.16), step(0.5, bh11(seed + col)));
         float frame = 1.0 - bRect(f, dr.xy + 0.06, dr.zw - 0.06, px);
@@ -412,7 +436,7 @@ void bSurface() {
         rough = mix(rough, 0.45, inD); metal = mix(metal, 0.5, inD);
         // lamp glow pool on the wall above the door at night
         float gl = exp(-length((f - vec2(cellW * 0.5, 2.8)) * vec2(1.2, 1.6)) * 1.5);
-        emis += vec3(1.0, 0.78, 0.5) * gl * uNight * 0.35;
+        emis += vec3(1.0, 0.78, 0.5) * gl * uNight * 0.18;
       } else {
         bWindow(f, win, Vtl, room, rid, px, frameType, sashes, transom, wallCol, alb, rough, metal, nT, emis, ao);
       }
@@ -420,6 +444,22 @@ void bSurface() {
       if (style == 6.0 && !stair) {
         float sur = bRect(f, win.xy - 0.12, win.zw + vec2(0.12, 0.22), px) * (1.0 - bRect(f, win.xy, win.zw, px));
         alb = mix(alb, wallCol * 1.12, sur * 0.8);
+      }
+      // private houses: painted window trims (nalichniki) and shutters on some houses
+      if (houseStyle && !door) {
+        float hs = bh11(seed * 4.1);
+        if (hs > 0.5) {
+          vec3 trimC = hs > 0.85 ? vec3(0.25, 0.45, 0.62) : hs > 0.78 ? vec3(0.30, 0.50, 0.32) : vec3(0.85, 0.85, 0.82);
+          float sur = bRect(f, win.xy - vec2(0.1, 0.08), win.zw + vec2(0.1, 0.16), px) * (1.0 - bRect(f, win.xy, win.zw, px));
+          alb = mix(alb, trimC, sur);
+        }
+        if (bh11(seed * 7.7) > 0.88) {
+          float sw = (win.z - win.x) * 0.5;
+          float sh = bRect(f, vec2(win.x - sw - 0.1, win.y), vec2(win.x - 0.1, win.w), px) + bRect(f, vec2(win.z + 0.1, win.y), vec2(win.z + sw + 0.1, win.w), px);
+          vec3 shC = bh11(seed * 3.3) > 0.5 ? vec3(0.22, 0.38, 0.25) : vec3(0.22, 0.32, 0.5);
+          shC *= 0.85 + 0.15 * step(0.5, fract(f.y / 0.12));
+          alb = mix(alb, shC, clamp(sh, 0.0, 1.0));
+        }
       }
       // dirt streaks below the window
       float below = step(f.y, win.y) * bBox(f.x, win.x, win.z, 0.1) * smoothstep(win.y - 2.0, win.y, f.y);
@@ -447,6 +487,17 @@ void bSurface() {
         rough = mix(rough, mix(0.25, 0.85, par), inB);
         ao *= mix(1.0, 0.85, inB * step(1.0, f.y) * step(f.y, 1.5));
       }
+    }
+    // industrial / warehouse sectional doors on the ground floor
+    if ((style == 9.0 || style == 11.0) && !gable && !parapetBand && p.y >= 0.0 && row < 0.5 && L > 12.0 && col >= 0.0 && col < nCols
+        && mod(col + floor(seed / 16.0), 4.0) < 0.5) {
+      float gw = min(cellW - 1.0, 4.2);
+      float inG = bRect(f, vec2((cellW - gw) * 0.5, 0.0), vec2((cellW + gw) * 0.5, min(4.6, floorH - 0.6)), px);
+      vec3 gc = mix(vec3(0.55, 0.56, 0.56), vec3(0.25, 0.35, 0.55), step(0.6, bh11(seed + col)));
+      gc *= 0.85 + 0.15 * step(0.08, fract(f.y / 0.55));
+      alb = mix(alb, gc, inG);
+      metal = mix(metal, 0.4, inG); rough = mix(rough, 0.5, inG);
+      nT = mix(nT, vec3(0.0, 0.0, 1.0), inG);
     }
     // garage gates
     if (style == 10.0 && !gable && !parapetBand && p.y >= 0.0 && L > 7.0) {
@@ -479,6 +530,13 @@ void bSurface() {
     bRough = rough;
     bMetal = metal;
     bN = normalize(T * nT.x + B * nT.y + N * nT.z);
+#ifndef USE_ENVMAP
+    if (bGlass > 0.0) {
+      vec3 Rw = reflect(-V, bN);
+      float Fr = 0.04 + 0.96 * pow(1.0 - clamp(dot(V, bN), 0.0, 1.0), 5.0);
+      emis += bSky(Rw) * Fr * bGlass;
+    }
+#endif
     bEmis = emis;
     bAO = ao;
     return;
@@ -502,8 +560,8 @@ void bSurface() {
       nt = vec3(sl * 0.4 * (1.0 - farT), 0.0, 1.0);
       alb = base * (0.9 + 0.12 * nf.g);
       float galv = step(0.62, vC.r) * step(0.62, vC.g);
-      metal = galv > 0.5 ? 0.7 : 0.35;
-      rough = galv > 0.5 ? 0.45 : 0.5;
+      metal = galv > 0.5 ? 0.5 : 0.3;
+      rough = galv > 0.5 ? 0.55 : 0.55;
       // sheet overlaps every ~6 m
       alb *= 1.0 - 0.15 * bBox(fract(q.y / 6.0) * 6.0, 0.0, 0.05, px) * (1.0 - farT);
     } else if (style == 3.0) {
@@ -661,12 +719,59 @@ void bSurface() {
       // shop sign: coloured board, glowing at night
       bAlbedo = base * 0.9;
       bRough = 0.4;
-      bEmis = base * (0.15 * uDay + 2.2 * uNight);
+      bEmis = base * (0.12 * uDay + 1.1 * uNight);
     } else {
       bAlbedo = vec3(0.9);
-      bEmis = vec3(1.0, 0.8, 0.55) * (uNight * 6.0);
+      bEmis = vec3(1.0, 0.8, 0.55) * (uNight * 3.0);
       bRough = 0.3;
     }
+    return;
+  }
+
+  if (kind < 11.5) {
+    // ===================================================================== PLOT FENCES
+    vec3 T = normalize(cross(vec3(0.0, 1.0, 0.0), N));
+    vec3 nT = vec3(0.0, 0.0, 1.0);
+    vec4 nf = bNoise(p * vec2(0.5, 0.5) + seed * 0.13);
+    vec3 alb = base;
+    float rough = 0.5, metal = 0.0;
+    float farT = smoothstep(0.01, 0.04, px);
+    if (style < 1.5 || style > 3.5) {
+      // corrugated steel sheet (profnastil), vertical trapezoid ribs
+      float r = fract(p.x / 0.115);
+      float sl = (smoothstep(0.05, 0.15, r) - smoothstep(0.45, 0.55, r)) * 2.0 - 1.0;
+      nT = vec3(sl * 0.45 * (1.0 - farT), 0.0, 1.0);
+      alb = base * (0.92 + 0.08 * nf.g);
+      metal = 0.35; rough = 0.45;
+      if (style > 3.5) {
+        // gate: frame and two leaves
+        float L = vW.x * 0.01;
+        float fr = 1.0 - bRect(p, vec2(0.05, 0.05), vec2(L - 0.05, 1.9), px);
+        float mid = bBox(p.x, L * 0.5 - 0.03, L * 0.5 + 0.03, px);
+        alb = mix(alb, base * 0.55, clamp(fr + mid, 0.0, 1.0));
+      }
+    } else if (style < 2.5) {
+      // wooden planks
+      float r = fract(p.x / 0.14);
+      float gap = 1.0 - bBox(r * 0.14, 0.008, 0.132, px);
+      float plank = bh11(floor(p.x / 0.14) + seed);
+      vec4 grain = bNoise(vec2(p.x * 3.0, p.y * 0.15) + plank);
+      alb = base * (0.75 + 0.35 * plank) * (0.85 + 0.3 * grain.b);
+      alb = mix(alb, vec3(0.33, 0.31, 0.28), smoothstep(0.4, 0.8, nf.r) * 0.5); // weathered grey
+      alb = mix(alb, vec3(0.03), gap * 0.9);
+      rough = 0.9;
+    } else {
+      // metal picket (rendered solid): bars
+      float r = fract(p.x / 0.12);
+      float bar = bBox(r * 0.12, 0.0, 0.03, px);
+      alb = mix(base * 0.35, base, bar);
+      metal = 0.3; rough = 0.5;
+    }
+    // ground splash and rust at the bottom
+    alb *= mix(0.7, 1.0, smoothstep(-0.1, 0.5, p.y));
+    alb = mix(alb, vec3(0.3, 0.17, 0.1), smoothstep(0.7, 0.95, nf.a) * smoothstep(0.6, 0.0, p.y) * 0.6);
+    bAlbedo = alb; bRough = rough; bMetal = metal;
+    bN = normalize(T * nT.x + vec3(0.0, 1.0, 0.0) * nT.y + N * nT.z);
     return;
   }
 }

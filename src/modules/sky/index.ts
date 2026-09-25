@@ -14,7 +14,7 @@ import { createSkyUniforms, type SkyUniforms } from './uniforms';
 import { Rain } from './rain';
 
 /** Cloud texture tile size in metres. */
-const CLOUD_TILE = 18000;
+const CLOUD_TILE = 10000;
 
 export interface SkyService {
   /** Key light mirror (sun by day, moon by night). Not part of the scene graph; clone it for path tracing. */
@@ -24,6 +24,8 @@ export interface SkyService {
   setTime(hours: number): void;
   setWeather(w: Partial<WeatherState> & { cirrus?: number }): void;
   getWeather(): WeatherState & { cirrus: number };
+  /** Screenshot mode renders on demand; call after changing materials/uniforms that the sky cannot detect. */
+  requestRender(): void;
   /** Current exposure multiplier applied before AgX tone mapping. */
   readonly exposure: number;
   /** Radiance scale: Bruneton relative luminance -> scene units (noon sun ≈ 3). */
@@ -115,6 +117,8 @@ class SkySystem {
 
     this.pipeline = new SkyPipeline(ctx, this.uniforms);
     this.pipeline.syncFrames = ctx.settings.shot;
+    this.pipeline.onDemand = ctx.settings.shot && ctx.settings.params.get('skyondemand') !== '0';
+    this.pipeline.debugLog = ctx.settings.params.get('skylog') === '1';
     if (stars) this.pipeline.composite.setStars(stars);
     if (ctx.settings.params.get('skypipe') !== '0') ctx.setPipeline(this.pipeline);
 
@@ -190,11 +194,12 @@ class SkySystem {
       this.pipeline.atmosphere.skCloudsOn.value = w.cloudCover > 0.001 || w.cirrus > 0.001 ? 1 : 0;
       this.pipeline.composite.starRot.copy(this.lighting.starRot);
       this.pipeline.composite.starIntensity = this.lighting.starIntensity;
+      this.pipeline.sigExtra = this.weatherKey();
     }
     ctx.renderer.toneMappingExposure = this.lighting.exposure;
 
     this.lighting.updateEnvironment(this.weatherKey());
-    this.rain?.update(dt, w.rain, this.lighting);
+    this.rain?.update(dt, w.rain, this.uniforms.skFogAmb.value);
 
     this.scanTimer -= dt;
     if (this.scanTimer <= 0) {
@@ -206,8 +211,8 @@ class SkySystem {
   cloudSteps(): number {
     const q = this.ctx.settings.quality;
     if (this.soft === null) this.soft = SkyPipeline.softwareGL(this.ctx.renderer);
-    if (this.soft) return 14;
-    return q === 'low' ? 12 : q === 'medium' ? 20 : q === 'high' ? 32 : 48;
+    if (this.soft) return 9;
+    return q === 'low' ? 6 : q === 'medium' ? 10 : q === 'high' ? 14 : 20;
   }
 
   cloudShadowAt(x: number, y: number, z: number): number {
@@ -242,6 +247,7 @@ const mod: CityModule = {
       setTime: (h: number) => { ctx.env.hours = ((h % 24) + 24) % 24; ctx.events.emit('time', ctx.env.hours); },
       setWeather: (w) => sys.setWeather(w),
       getWeather: () => ({ ...sys.weather }),
+      requestRender: () => sys.pipeline?.invalidate(),
       get exposure() { return sys.lighting ? sys.lighting.exposure : 1; },
       radianceScale: 2,
       cloudShadowAt: (x, y, z) => sys.cloudShadowAt(x, y, z),

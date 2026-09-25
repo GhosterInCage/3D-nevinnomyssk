@@ -112,7 +112,7 @@ vGCol = vec3(0.0); vGT = vec2(0.0);
     if (type < 0.5) { hB = 0.17; wB = 0.011; lean = 0.4; }
     else if (type < 1.5) { hB = 0.42; wB = 0.009; lean = 0.45; }
     else if (type < 2.5) { hB = 1.75; wB = 0.02; lean = 0.18; stiff = 0.6; }
-    else if (type < 3.5) { hB = 0.82; wB = 0.0065; lean = 0.07; stiff = 0.8; }
+    else if (type < 3.5) { hB = 0.82; wB = 0.011; lean = 0.07; stiff = 0.8; }
     else if (type < 4.5) { hB = 1.55; wB = 0.06; lean = 0.25; stiff = 0.5; }
     else { hB = 0.15; wB = 0.005; lean = 0.25; stiff = 0.2; }
     float hgt = hB * mix(0.4, 1.6, cov.b) * (0.55 + 0.9 * hb3) * fade;

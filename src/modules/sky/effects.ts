@@ -16,6 +16,7 @@ export class AtmosphereEffect extends Effect {
   readonly skCloudBuf = new THREE.Uniform<THREE.Texture | null>(null);
   readonly skCloudDist = new THREE.Uniform<THREE.Texture | null>(null);
   readonly skGroundAlt = new THREE.Uniform(350);
+  readonly skCloudTexel = new THREE.Uniform(new THREE.Vector2(1, 1));
 
   constructor(private cam: THREE.PerspectiveCamera, shared: SkyUniforms) {
     const uniforms = new Map<string, THREE.Uniform>();
@@ -35,6 +36,7 @@ export class AtmosphereEffect extends Effect {
     uniforms.set('skCloudBuf', this.skCloudBuf);
     uniforms.set('skCloudDist', this.skCloudDist);
     uniforms.set('skGroundAlt', this.skGroundAlt);
+    uniforms.set('skCloudTexel', this.skCloudTexel);
   }
 
   override get mainCamera(): THREE.Camera { return this.cam; }
@@ -115,7 +117,7 @@ export class GradeEffect extends Effect {
       uniforms: new Map<string, THREE.Uniform>([
         ['gExposure', new THREE.Uniform(1)],
         ['gVignette', new THREE.Uniform(0.28)],
-        ['gSaturation', new THREE.Uniform(1.1)],
+        ['gSaturation', new THREE.Uniform(1.06)],
         ['gPower', new THREE.Uniform(1.08)],
         ['gLift', new THREE.Uniform(new THREE.Vector3())],
         ['gAgx', new THREE.Uniform(1)],
