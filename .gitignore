@@ -5,3 +5,7 @@ data/processed/
 .DS_Store
 tools/shots/
 /tmp/
+__pycache__/
+*.pyc
+*.nbc
+*.nbi

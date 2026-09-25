@@ -22,7 +22,7 @@
     "ortho": "terrain/ortho.jpg",
     "orthoGain": 1.0,
     "landcover": "terrain/landcover.png",
-    "minHeight": 278.993896484375,
-    "maxHeight": 697.2498168945312
+    "minHeight": 276.9226379394531,
+    "maxHeight": 697.3012084960938
   }
 }
