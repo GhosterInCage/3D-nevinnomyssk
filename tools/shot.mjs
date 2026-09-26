@@ -20,6 +20,8 @@
 //   --extra "&k=v"      extra query string
 //   --eval "js"         JS evaluated in the page after ready (before shots)
 //   --headed            use full chromium instead of headless shell
+//   --canvas            capture via canvas.toDataURL (works when page.screenshot is slow under load)
+//   --shot-timeout ms   page.screenshot timeout (default 180000)
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -113,7 +115,12 @@ try {
     // wait for a couple of real frames
     await page.evaluate(() => new Promise((r) => { const c = window.__city.ctx; const f = c.frame; const off = c.events.on('frame', (n) => { if (n - f >= 2) { off(); r(); } }); }));
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    await page.screenshot({ path: file });
+    if (args.canvas) {
+      const url = await page.evaluate(() => window.__city.ctx.canvas.toDataURL('image/png'));
+      fs.writeFileSync(file, Buffer.from(url.split(',')[1], 'base64'));
+    } else {
+      await page.screenshot({ path: file, timeout: +(args['shot-timeout'] || 180000) });
+    }
     const info = await page.evaluate(() => {
       const r = window.__city.ctx.renderer.info;
       const heap = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null;
@@ -147,7 +154,8 @@ try {
   }
 } catch (e) {
   console.error('FAILED:', e.message);
-  try { await page.screenshot({ path: args.out || 'tools/shots/failed.png' }); } catch { /* ignore */ }
+  const failPath = args.out ? args.out.replace(/\.png$/, '') + '.failed.png' : path.join(args.dir || 'tools/shots', 'failed.png');
+  try { fs.mkdirSync(path.dirname(failPath), { recursive: true }); await page.screenshot({ path: failPath, timeout: 60000 }); } catch { /* ignore */ }
   exitCode = 1;
 }
 const uniq = [...new Set(logs)];

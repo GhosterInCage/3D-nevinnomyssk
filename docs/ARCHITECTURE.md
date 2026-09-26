@@ -121,3 +121,35 @@ The harness starts a Vite dev server, renders headlessly with SwiftShader (slow,
 - Budgets: draw calls < 1500, triangles < 6 M.
 - Stream and LOD everything. Use InstancedMesh or BatchedMesh, merge per-tile geometry, and cull with frustum and distance checks.
 - Heavy CPU generation (meshing ~58k buildings, roads) runs in Web Workers (`new Worker(new URL('./x.worker.ts', import.meta.url), {type:'module'})`), or incrementally across frames.
+
+## Integration conventions (added after the first build round)
+
+These conventions were collected from the module reports (see `docs/modules/*.md`), and every module must follow them.
+
+- **The sky owns all lighting.**
+  - The sky module sets `scene.fog` and `scene.background` to null, and owns `scene.environment` (PMREM) for both scenes.
+  - It is the only source of the sun/moon key light (`ctx.get('sky').sunLight`) and the cascaded shadows.
+  - It writes `env.sunColor/sunIntensity/moonDirection/cloudCover/rain/fog`.
+  - Other modules must NOT add DirectionalLight, HemisphereLight or AmbientLight, and must not set background, fog or environment.
+  - A small number of local PointLight/SpotLight sources near the camera, such as car headlights, is fine.
+- **Radiance units.** Noon sun irradiance is about 3, and night exposure goes up to about 13.
+  - Emissive guidance: lit windows 0.05–0.25 (× `env.night`), and bulbs, street lamps and headlights 2–20.
+  - Anything brighter than about 0.3 at night reads as a light source and blooms.
+- **Terrain surface.** The rendered ground is a Catmull-Rom bicubic surface, so use `ctx.get('terrain').heightAt(x,z)` when exact contact matters. `ctx.heightfield.sample` is bilinear, and differs by a few cm, or up to about 0.3 m on sharp banks.
+  - GPU helper: `ctx.get('terrain').glsl.heightfield`.
+  - In pipelines, `data/processed/terrain_final.npy` (bare earth plus carved river beds) is the authoritative ground.
+  - `HeightField.version` increments on `markDirty()`.
+- **Roads service extras.**
+  - `roads.isRoad(x,z,margin)` and `roads.distanceToRoad(x,z)`: vegetation and buildings use these to keep off carriageways and rail beds.
+  - `roads.roadSurfaceY(x,z,bridgeId)`.
+  - `roads.graph.edges` gives dir, lanes, width, speed and per-point wheel-contact `y`, including bridge decks.
+  - `roads.signals` and `roads.signalState(phase, t)`.
+  - `roads.lampMap` and `roads.lamps()` provide city-wide street-lamp lighting for facades and ground.
+- **Object flags.**
+  - `userData.noPathTrace`: excluded from the path tracer.
+  - `userData.ptMaterial`: proxy material for the path tracer.
+  - `userData.noReflect`: skipped by the water reflection pass. Set it for grass, particles and rain.
+  - `userData.noSkyPatch`: the sky does not patch this material.
+  - Transparent objects drawn over the sky must write meaningful alpha, because it is used as coverage.
+- **Sky rendering in shot mode.** The sky renders on demand. Scripts that change uniforms or materials directly should call `ctx.get('sky')?.requestRender()`.
+- **Shot harness.** `--canvas` captures through `toDataURL`, which is robust when `page.screenshot` is slow under load. `--shot-timeout` defaults to 180 s.

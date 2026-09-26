@@ -26,6 +26,8 @@ export class HeightField {
   readonly res: number;
   /** Heights in metres, row-major, row 0 = north edge (z = -half). */
   readonly data: Float32Array;
+  /** Incremented by markDirty(); modules keeping GPU copies of the heights can watch it. */
+  version = 0;
   minHeight = Infinity;
   maxHeight = -Infinity;
   private _texture: THREE.DataTexture | null = null;
@@ -68,7 +70,11 @@ export class HeightField {
     return this.data[j * n + i];
   }
 
-  /** Bilinear height (m above sea level) at world x/z. Clamped outside the grid. */
+  /**
+   * Bilinear height (m above sea level) at world x/z. Clamped outside the grid.
+   * NOTE: the terrain module renders a Catmull-Rom bicubic surface; when exact
+   * agreement with the rendered ground matters use ctx.get('terrain').heightAt().
+   */
   sample(x: number, z: number): number {
     let gx = (x + this.half) / this.res;
     let gz = (z + this.half) / this.res;
@@ -153,6 +159,7 @@ export class HeightField {
 
   /** Call after modifying `data` in place (e.g. flattening a construction site). */
   markDirty(): void {
+    this.version++;
     if (this._texture) this._texture.needsUpdate = true;
   }
 }

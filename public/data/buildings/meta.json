@@ -181,17 +181,17 @@
  "model": {
   "n_labelled": 932,
   "cv": "5-fold spatial GroupKFold (700 m blocks)",
-  "bucket_accuracy": 0.739,
-  "accuracy_3plus_floors": 0.645,
-  "within_one_bucket": 0.93,
+  "bucket_accuracy": 0.722,
+  "accuracy_3plus_floors": 0.649,
+  "within_one_bucket": 0.935,
   "per_class": {
    "1": {
     "n": 514,
-    "recall": 0.914
+    "recall": 0.897
    },
    "2": {
     "n": 170,
-    "recall": 0.347
+    "recall": 0.3
    },
    "3": {
     "n": 43,
@@ -199,15 +199,15 @@
    },
    "4": {
     "n": 14,
-    "recall": 0.071
+    "recall": 0.214
    },
    "5": {
     "n": 144,
-    "recall": 0.91
+    "recall": 0.896
    },
    "9": {
     "n": 37,
-    "recall": 0.568
+    "recall": 0.595
    },
    "10": {
     "n": 6,
@@ -221,24 +221,24 @@
  },
  "stats": {
   "typology": {
-   "outbuilding": 16880,
-   "house": 30012,
+   "outbuilding": 16878,
+   "house": 30010,
    "agricultural": 32,
-   "lowrise_apartments": 574,
-   "khrushchevka": 510,
-   "garages": 1367,
-   "warehouse": 1088,
-   "commercial": 435,
+   "khrushchevka": 515,
+   "lowrise_apartments": 552,
+   "garages": 1373,
+   "warehouse": 1103,
+   "commercial": 426,
    "dacha": 4048,
    "utility": 1078,
-   "industrial": 859,
-   "public": 191,
+   "tower": 19,
+   "industrial": 858,
+   "public": 193,
    "school": 28,
    "kindergarten": 35,
-   "panel9": 97,
-   "tower": 16,
+   "panel9": 95,
    "greenhouse": 28,
-   "stalinka": 132,
+   "stalinka": 139,
    "religious": 8,
    "kiosk": 1
   },

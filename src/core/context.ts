@@ -97,7 +97,7 @@ export class AppContext {
     this.renderer.toneMapping = THREE.AgXToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap; // sky module configures filtering
     this.canvas = this.renderer.domElement;
     this.canvas.id = 'scene';
     this.canvas.tabIndex = 0;

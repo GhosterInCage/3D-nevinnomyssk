@@ -31,13 +31,15 @@ FETCH = [
 # order matters: water computes river levels -> terrain carves beds -> everything else drapes on terrain
 BUILD = [
     ["build_water.py"],
-    ["build_terrain.py"],
+    ["build_terrain.py", "--if-water-changed"],
     ["build_terrain_base.py"],
     ["build_buildings.py"],
     ["build_roads.py"],
     ["build_vegetation.py"],
     ["build_landmarks.py"],
     ["build_places.py"],
+    ["build_sky.py"],
+    ["build_traffic.py"],
 ]
 
 

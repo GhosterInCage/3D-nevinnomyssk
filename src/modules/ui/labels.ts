@@ -79,6 +79,10 @@ export class Labels {
   constructor(private ctx: AppContext, private gz: Gazetteer, parent: HTMLElement) {
     this.layer = h('div', { class: 'nv-labels' });
     parent.prepend(this.layer);
+    // anchor heights depend on building roofs / water levels: recompute once those services arrive
+    const invalidate = () => { this.anchorCache.clear(); for (const l of this.active.values()) l.ay = 0; this.lastCandPos.set(1e9, 0, 0); };
+    ctx.events.on('service:water', invalidate);
+    ctx.need<any>('buildings').then((b) => { invalidate(); b?.ready?.then?.(invalidate); });
   }
 
   setEnabled(v: boolean): void {
