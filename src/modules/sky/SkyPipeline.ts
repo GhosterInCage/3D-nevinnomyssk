@@ -1,9 +1,11 @@
 // The sky module's render pipeline (installed with ctx.setPipeline):
 //
 //   CompositePass   backdrop + main scene -> HDR buffer, combined depth, stars
-//   N8AOPostPass    screen-space ambient occlusion (quality >= medium)
-//   [clouds]        volumetric clouds (@takram/three-clouds, quality high+) -> overlay texture
-//   Atmosphere      sky, aerial perspective, cloud layers, fog, night sky
+//   N8AOPostPass    screen-space ambient occlusion (when the profile enables AO)
+//   HookPass        optional external hook (extra buffers before the atmosphere)
+//   SkyBuffersPass  aerial-perspective froxel LUT, low-res cloud buffer (+ temporal
+//                   resolve when interactive), crepuscular-ray buffer
+//   Atmosphere      sky, aerial perspective, cloud composite, god rays, fog, night sky
 //   Bloom + Grade   bloom (threshold follows exposure), exposure, vignette, AgX
 //   SMAA            anti-aliasing, sRGB output
 import * as THREE from 'three';
@@ -77,6 +79,9 @@ export class SkyPipeline implements RenderPipeline {
     this.atmosphere.skCloudBuf.value = this.buffers.cloudColor;
     this.atmosphere.skCloudDist.value = this.buffers.cloudDist;
     this.atmosphere.skCloudTexel.value = this.buffers.cloudTexel;
+    this.atmosphere.skShafts.value = this.buffers.godRays.raysRT.texture;
+    this.buffers.outUniform = this.atmosphere.skCloudBuf;
+    this.buffers.temporal = !ctx.settings.shot || ctx.settings.params.get('skytaa') === '1';
     this.atmospherePass = new EffectPass(this.apCamera, this.atmosphere);
     this.composer.addPass(this.atmospherePass);
 
@@ -89,6 +94,11 @@ export class SkyPipeline implements RenderPipeline {
       levels: this.soft ? 4 : 7,
     });
     this.bloom.blendMode.opacity.value = prof.bloom ? 1 : 0;
+    // skip the blur chain entirely when bloom is off (opacity 0 alone still renders it)
+    const bloomUpdate = this.bloom.update.bind(this.bloom);
+    this.bloom.update = (r: THREE.WebGLRenderer, input: THREE.WebGLRenderTarget, dt?: number) => {
+      if (this.bloom.blendMode.opacity.value > 0) bloomUpdate(r, input, dt);
+    };
     this.postPass = new EffectPass(this.apCamera, this.bloom, this.grade);
     this.postPass.dithering = true;
     this.composer.addPass(this.postPass);
@@ -107,12 +117,14 @@ export class SkyPipeline implements RenderPipeline {
   static bufferConfig(ctx: AppContext): BufferConfig {
     const q = ctx.settings.quality;
     const soft = SkyPipeline.softwareGL(ctx.renderer);
-    if (soft) return { lutW: 32, lutH: 18, lutD: 16, cloudDiv: 3, cloudSubs: 3 };
+    if (soft) return { lutW: 32, lutH: 18, lutD: 16, cloudDiv: 3, cloudSubs: ctx.settings.shot ? 5 : 3 };
+    // cloud buffer resolution is relative to device pixels: keep ~half CSS resolution
+    const pr = Math.max(1, ctx.pixelRatio || 1);
     return {
       lutW: q === 'low' ? 48 : 64,
       lutH: q === 'low' ? 27 : 36,
       lutD: q === 'low' ? 24 : 32,
-      cloudDiv: q === 'ultra' ? 1 : q === 'low' ? 3 : 2,
+      cloudDiv: q === 'ultra' ? Math.max(1, Math.round(pr)) : q === 'low' ? 3 : Math.max(2, Math.round(2 * pr)),
       cloudSubs: q === 'low' ? 1 : q === 'medium' ? 2 : 3,
     };
   }
@@ -221,6 +233,7 @@ export class SkyPipeline implements RenderPipeline {
     }
     this.syncCamera();
     this.grade.exposure = this.exposure;
+    this.grade.u('gNight').value = this.ctx.env.night;
     this.bloom.luminanceMaterial.threshold = this.bloomThreshold / Math.max(1e-4, this.exposure);
     this.composer.render(dt);
     if (this.syncFrames) {

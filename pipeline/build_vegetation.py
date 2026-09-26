@@ -366,14 +366,15 @@ log("zones", {n: int((zone == i).sum()) for n, i in Z.items()})
 t_nd = smoothstep(0.32, 0.68, ndvi)
 CF = tree10 * (0.35 + 0.65 * t_nd)
 green_extra = smoothstep(0.42, 0.75, ndvi) * (1 - tree10)
+green_extra_priv = smoothstep(0.28, 0.62, ndvi) * (1 - tree10)
 extra_w = np.zeros_like(CF)
-extra_w[zone == Z["private"]] = 0.22
+extra_w[zone == Z["private"]] = 0.34
 extra_w[zone == Z["allotments"]] = 0.45
 extra_w[zone == Z["urban"]] = 0.16
 extra_w[zone == Z["park"]] = 0.30
 extra_w[zone == Z["cemetery"]] = 0.40
 extra_w[zone == Z["industrial"]] = 0.08
-CF += green_extra * extra_w
+CF += np.where(zone == Z["private"], green_extra_priv, green_extra) * extra_w
 forest_like = Z_forest | Z_treerow
 CF = np.where(forest_like, np.maximum(CF, 0.75 * smoothstep(0.30, 0.6, ndvi)), CF)
 CF[(wc == 80) | (wc == 60)] *= 0.2
@@ -384,7 +385,7 @@ excess_s = ndimage.gaussian_filter(np.clip(excess, 0, 40), 1.5)
 CROWN = {"shelterbelt": 9.0, "forest": 11.0, "riparian": 13.0, "urban": 9.0, "park": 9.0, "cemetery": 6.0,
          "private": 6.5, "allotments": 5.5, "industrial": 9.5}
 CLOSURE = {"shelterbelt": 0.85, "forest": 0.85, "riparian": 0.85, "urban": 0.8, "park": 0.9, "cemetery": 0.9,
-           "private": 0.55, "allotments": 0.36, "industrial": 0.7}
+           "private": 0.75, "allotments": 0.36, "industrial": 0.7}
 dens_by_zone = np.array([CLOSURE[n] / (math.pi * (CROWN[n] / 2) ** 2) for n in ZONES], np.float32)
 DENS = CF * dens_by_zone[zone]
 log("expected trees", int(DENS.sum() * 100))
@@ -741,7 +742,7 @@ hfac = 0.7 + 0.6 * smoothstep(0.3, 0.8, ndvi)
 m = wc == 30
 dens[m] = 0.55 + 0.45 * smoothstep(0.25, 0.65, ndvi[m]); ctype[m] = 1
 m = wc == 10
-dens[m] = 0.55 * smoothstep(0.3, 0.8, ndvi[m]); ctype[m] = 1
+dens[m] = 0.42 + 0.43 * smoothstep(0.3, 0.7, ndvi[m]); ctype[m] = 1
 m = wc == 50
 dens[m] = 0.95 * smoothstep(0.17, 0.42, ndvi[m]); ctype[m] = 0
 m = wc == 60

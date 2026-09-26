@@ -72,7 +72,7 @@ export interface TileMeshes {
   marks: THREE.Mesh | null;
 }
 
-const K_SKIRT = 0, K_CURB = 1, K_MARK = 2;
+const K_SKIRT = 0, K_CURB = 1, K_MARK = 2, K_PLATMARK = 8;
 
 /** Proxy materials for the path tracer (the real ones are custom shaders). */
 export const PT = {
@@ -89,7 +89,7 @@ export function buildSuperTile(ctx: AppContext, data: RoadsData, tiles: TileRec[
   const glat = view(buf, meta.arrays.glat) as Int16Array;
   const gatt = view(buf, meta.arrays.gatt) as Uint8Array;
   const gdir = view(buf, meta.arrays.gdir) as Int8Array;
-  const gidx = view(buf, meta.arrays.gidx) as Uint32Array;
+  const gidx = view(buf, meta.arrays.gidx) as Uint32Array | Uint16Array;
   const T = meta.tile, H = meta.half, QS = meta.qs;
 
   // ---- count
@@ -157,7 +157,10 @@ export function buildSuperTile(ctx: AppContext, data: RoadsData, tiles: TileRec[
 
   // ---- markings
   const mb = new SurfaceBuilder();
-  for (const p of polys) if (p.kind === K_MARK) addMarking(mb, p, surfY, ground);
+  for (const p of polys) {
+    if (p.kind === K_MARK) addMarking(mb, p, surfY, ground);
+    else if (p.kind === K_PLATMARK) addMarking(mb, p, surfY, ground, ELEV[S.PLATFORM] + 0.012, S.MARK_YELLOW);
+  }
   let marks: THREE.Mesh | null = null;
   const mg = mb.build(true);
   if (mg) {
@@ -242,20 +245,20 @@ function addCurb(sb: SurfaceBuilder, p: PolyRec, ground: Ground): void {
 }
 
 /** Painted marking strip (width p.width) with the along-line distance in aLat (for dashes). */
-function addMarking(mb: SurfaceBuilder, p: PolyRec, surfY: SurfaceY, ground: Ground): void {
+function addMarking(mb: SurfaceBuilder, p: PolyRec, surfY: SurfaceY, ground: Ground, liftOverride?: number, surfOverride?: number): void {
   const pts = densify(p.pts, 6);
   const n = pts.length >> 1;
   if (n < 2) return;
   const nrm = vertexNormals(pts);
   const w = Math.max(0.08, p.width) / 2;
-  const surf = p.style === 6 ? S.MARK_YELLOW : S.MARK_WHITE;
+  const surf = surfOverride ?? (p.style === 6 ? S.MARK_YELLOW : S.MARK_WHITE);
   let along = 0;
   let prevL = -1, prevR = -1;
   for (let i = 0; i < n; i++) {
     const x = pts[i * 2], z = pts[i * 2 + 1];
     if (i > 0) along += Math.hypot(x - pts[i * 2 - 2], z - pts[i * 2 - 1]);
     const nx = nrm[i * 2] * w, nz = nrm[i * 2 + 1] * w;
-    const lift = p.group >= 0 ? 0.012 : ELEV[S.ASPH] + 0.012;
+    const lift = liftOverride ?? (p.group >= 0 ? 0.012 : ELEV[S.ASPH] + 0.012);
     const yl = surfY(x - nx, z - nz, p.group) + lift;
     const yr = surfY(x + nx, z + nz, p.group) + lift;
     ground.normal(x, z, nrmTmp);

@@ -117,7 +117,7 @@ export class Power {
       this.root.add(m);
       this.wireTiles.push({ cx: e.cx, cz: e.cz, mesh: m });
     }
-    console.info(`[roads] power: ${n} towers, ${spans} spans`);
+    void spans;
     ctx.registerColliders({ id: 'roads-power', query: (x, z, r) => this.grid.query(x, z, r).map((p) => p.col) });
   }
 

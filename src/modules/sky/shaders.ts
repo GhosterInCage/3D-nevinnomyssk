@@ -48,6 +48,7 @@ uniform float skLunarScale;
 uniform float skTime;
 
 uniform sampler2D skCloudTex;
+uniform sampler3D skNoise3D;     // 64^3 tileable inverted-Worley fbm (cloud detail)
 uniform vec4 skCloudP0;          // x cover, y uv scale (1/m), zw wind offset (m)
 uniform vec4 skCloudP1;          // x base altitude (m ASL), y thickness (m), z optical depth, w coverage variation
 uniform vec4 skCloudP2;          // x cirrus altitude, y cirrus cover, z detail erosion, w rain
@@ -112,7 +113,7 @@ vec2 skCloudUv(const vec2 xz) {
 // thick = local optical-thickness modulation (structure inside an overcast deck)
 float skCloudDensity2(const vec2 xz, out float thick) {
   vec2 uv = skCloudUv(xz);
-  vec4 c = texture(skCloudTex, uv);
+  vec4 c = texture(skCloudTex, uv, 1.0);
   float large = texture(skCloudTex, SK_ROT * uv * 0.37 + 0.21).a;
   float cov = clamp(skCloudP0.x + (large - 0.5) * skCloudP1.w * (1.0 - skCloudP0.x) * 2.0, 0.0, 1.0);
   float th = 1.0 - cov * 1.35;
@@ -300,19 +301,22 @@ vec4 skMarchCumulus(const vec3 ro, const vec3 rd, const float jitter, out float 
     float t = skShellHit(ro, rd, alt);
     if (t <= 0.0 || t > 1.6e5) continue;
     vec3 p = ro + rd * t;
+    // height-dependent domain warp: shifts the coverage contour irregularly with
+    // altitude so column flanks are not straight vertical extrusions
+    vec3 qw = vec3(p.x + skCloudP0.z, alt * 2.0, p.z + skCloudP0.w) * (1.0 / 2600.0);
+    vec2 warp = vec2(texture(skNoise3D, qw).r, texture(skNoise3D, qw.zyx + 0.37).r) - 0.5;
     float thick;
-    float d = skCloudDensity2(p.xz, thick);
+    float d = skCloudDensity2(p.xz + warp * (180.0 + 520.0 * hf), thick);
     if (d < 0.01) continue;
     float top = pow(d, 0.6);
-    top = min(1.0, top * (0.9 + 0.2 * jitter));
-    float prof = (1.0 - smoothstep(top * 0.55, top, hf)) * smoothstep(0.0, 0.12, hf + 0.04);
+    float prof = (1.0 - smoothstep(top * 0.45, top, hf)) * smoothstep(0.0, 0.14, hf + 0.03);
     if (prof <= 0.0) continue;
     float lod = clamp((t - 3000.0) / 40000.0, 0.0, 1.0);
-    // detail varies continuously with height (oblique projection of a 2D noise = pseudo-3D)
-    vec2 duv = skCloudUv(p.xz + vec2(0.55, -0.35) * (hf * H));
-    float det = texture(skCloudTex, duv * 5.3 + vec2(0.13, skTime * 0.00003)).b * 0.65
-              + texture(skCloudTex, SK_ROT * duv * 13.1 + 0.4).b * 0.35;
-    float dens = clamp(d * prof * 1.3 - det * skCloudP3.w * mix(1.0, 0.4, lod) * (1.0 - d * 0.5), 0.0, 1.0);
+    // 3D detail erosion (true 3D noise: no vertical extrusion streaks)
+    vec3 q = vec3(p.x + skCloudP0.z, alt * 1.4, p.z + skCloudP0.w) * (1.0 / 1100.0);
+    float n3 = texture(skNoise3D, q).r * 0.62 + texture(skNoise3D, q * 2.9 + vec3(0.31, 0.17, 0.53)).r * 0.38;
+    float base = d * prof;
+    float dens = clamp(base * 1.35 - n3 * skCloudP3.w * mix(1.0, 0.45, lod) * (1.0 - base * 0.7), 0.0, 1.0);
     if (dens <= 0.0) continue;
     // path length represented by this plane (oblique rays cross more cloud per plane, capped)
     vec3 up = normalize(p + vec3(0.0, SK_R, 0.0));
@@ -338,7 +342,20 @@ vec4 skMarchCumulus(const vec3 ro, const vec3 rd, const float jitter, out float 
     T *= 1.0 - a;
   }
   tMean = ws > 1e-4 ? tw / ws : 1e9;
-  return vec4(Lsum, 1.0 - T);
+  float alpha = 1.0 - T;
+  if (alpha > 0.001 && skCloudP3.w < 0.0) {
+    // (disabled) 2D cauliflower erosion of the silhouette at the mean hit point
+    vec3 pm = ro + rd * tMean;
+    float lodm = clamp((tMean - 3000.0) / 40000.0, 0.0, 1.0);
+    vec2 duv = skCloudUv(pm.xz);
+    float e = texture(skCloudTex, duv * 5.3 + vec2(0.13, skTime * 0.00003)).b * 0.6
+            + texture(skCloudTex, SK_ROT * duv * 13.1 + 0.4).b * 0.4;
+    float k = skCloudP3.w * mix(0.9, 0.35, lodm);
+    float a2 = clamp(alpha * (1.0 + 0.6 * k) - e * k * (1.0 - alpha * 0.85), 0.0, 1.0);
+    Lsum *= a2 / alpha;
+    alpha = a2;
+  }
+  return vec4(Lsum, alpha);
 }
 
 // Thin cirrus sheet (premultiplied radiance in luminance units, alpha); t = distance
@@ -384,6 +401,8 @@ vec3 skApplyFog(const vec3 col, const vec3 rdW, const float dist) {
   float tr = exp(-od);
   float cosT = dot(rdW, skSunDirW);
   vec3 inscatter = skFogSun * (skHG(cosT, 0.65) * 4.0 * PI * 0.35 + 0.65) + skFogAmb;
+  // multiple scattering inside fog whitens the light
+  inscatter = mix(inscatter, vec3(dot(inscatter, vec3(0.2126, 0.7152, 0.0722))), 0.45);
   return col * tr + inscatter * (1.0 - tr);
 }
 `;
@@ -418,7 +437,10 @@ vec3 skSkyRadiance(const vec3 rayE, const float fragAngle, const bool discs, out
     if (vds > skCosSunRadius) {
       float ang = acos(clamp(vds, -1.0, 1.0));
       float aa = smoothstep(ATMOSPHERE.sun_angular_radius, ATMOSPHERE.sun_angular_radius - fragAngle, ang);
-      radiance += T * GetSolarRadiance() * aa * skSunDiscScale;
+      // limb darkening (quadratic law, u = 0.6)
+      float rr = clamp(ang / ATMOSPHERE.sun_angular_radius, 0.0, 1.0);
+      float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - rr * rr));
+      radiance += T * GetSolarRadiance() * aa * limb * skSunDiscScale;
     }
     float ix = skIntersectSphere(rayE, skMoonDirECEF, skMoonAngularRadius);
     if (ix > 0.0) {
@@ -459,6 +481,8 @@ uniform sampler2D skCloudBuf;    // premultiplied cloud radiance (app units, AP 
 uniform sampler2D skCloudDist;   // r: cloud distance (km)
 uniform float skGroundAlt;       // altitude of the fake distant ground (m ASL)
 uniform vec2 skCloudTexel;       // 1 / cloud buffer size
+uniform sampler2D skShafts;      // crepuscular rays (quarter resolution)
+uniform vec3 skShaftColor;       // app units, 0 when inactive
 
 varying vec3 vSkRayW;
 
@@ -488,6 +512,7 @@ void mainImage(const vec4 inputColor, const vec2 uv, out vec4 outputColor) {
   float dpt = readDepth(uv);
   vec3 col;
   float dist;
+  vec4 fg = vec4(0.0);
   bool sky = dpt >= 1.0 - 1e-7;
   vec3 night = skNightSky(rdW, 0.0);
   if (sky) {
@@ -510,7 +535,10 @@ void mainImage(const vec4 inputColor, const vec2 uv, out vec4 outputColor) {
       vec3 T;
       vec3 L = skSkyRadiance(skDirToECEF(rdW), fragAngle, true, T) * S + night;
       float a = clamp(inputColor.a, 0.0, 1.0);
-      col = L * (1.0 - a) + inputColor.rgb * mix(vec3(1.0), T, 1.0 - a * 0.5);
+      // alpha ~ 0: stars (behind the atmosphere and clouds); alpha > 0: transparent
+      // foreground of the main scene (rain, smoke plumes) composited last
+      if (a < 0.004) col = L + inputColor.rgb * T;
+      else { col = L; fg = vec4(inputColor.rgb, a); }
       dist = 1e9;
     }
   } else {
@@ -529,7 +557,14 @@ void mainImage(const vec4 inputColor, const vec2 uv, out vec4 outputColor) {
     float cd = cdv.r / max(cdv.a, 1e-4) * 1000.0;
     if (cb.a > 0.0005 && cd < dist) col = col * (1.0 - cb.a) + cb.rgb;
   }
+  if (skShaftColor.r + skShaftColor.g + skShaftColor.b > 0.0) {
+    float sh = texture(skShafts, uv).r;
+    // shafts are in-scattered sunlight along the view ray: stronger over longer paths
+    float pathK = sky ? 1.0 : clamp(dist / 2500.0, 0.15, 1.0);
+    col += skShaftColor * sh * pathK;
+  }
   col = skApplyFog(col, rdW, sky ? min(dist, 1e9) : dist);
+  col = col * (1.0 - fg.a) + fg.rgb;
   outputColor = vec4(max(col, vec3(0.0)), 1.0);
 }
 `);
@@ -591,6 +626,7 @@ uniform vec2 uSize;
 uniform sampler3D skApLut;
 uniform float uSub;       // sub-sample index
 uniform float uSubCount;  // number of sub-samples accumulated (additive blending)
+uniform float uFrameJitter; // per-frame jitter offset (temporal accumulation), 0 in screenshots
 layout(location = 1) out highp vec4 skDistOut;
 void main() {
   vec2 uv = gl_FragCoord.xy / uSize;
@@ -598,7 +634,7 @@ void main() {
   vp /= vp.w;
   vec3 rdW = normalize((skInvView * vec4(vp.xyz, 0.0)).xyz);
   float S = skRadianceScale;
-  float jitter = fract((uSub + skIGN(gl_FragCoord.xy)) / uSubCount + 0.37 * uSub);
+  float jitter = fract((uSub + skIGN(gl_FragCoord.xy)) / uSubCount + 0.37 * uSub + uFrameJitter);
   float tCu;
   vec4 cu = skMarchCumulus(skCamWorld, rdW, jitter, tCu);
   float tCi;
@@ -669,3 +705,41 @@ void main() {
   gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
 }
 `);
+
+/** Temporal resolve of the cloud buffer: reprojection by cloud distance + neighbourhood clamp. */
+export const cloudResolveFrag = /* glsl */ `
+uniform sampler2D tCur;
+uniform sampler2D tCurDist;
+uniform sampler2D tHist;
+uniform mat4 invView;
+uniform mat4 invProj;
+uniform mat4 prevViewProj;
+uniform vec3 camPos;
+uniform float blend;
+uniform vec2 texel;
+void main() {
+  vec2 uv = gl_FragCoord.xy * texel;
+  vec4 c = texture2D(tCur, uv);
+  vec4 mn = c;
+  vec4 mx = c;
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      if (i == 0 && j == 0) continue;
+      vec4 s = texture2D(tCur, uv + vec2(float(i), float(j)) * texel);
+      mn = min(mn, s);
+      mx = max(mx, s);
+    }
+  }
+  vec4 dv = texture2D(tCurDist, uv);
+  float d = dv.r / max(dv.a, 1e-4) * 1000.0;
+  vec4 vp = invProj * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+  vp /= vp.w;
+  vec3 rd = normalize((invView * vec4(vp.xyz, 0.0)).xyz);
+  vec3 pW = camPos + rd * min(d, 2.0e5);
+  vec4 pc = prevViewProj * vec4(pW, 1.0);
+  vec2 puv = pc.xy / pc.w * 0.5 + 0.5;
+  bool inside = pc.w > 0.0 && puv.x > 0.0 && puv.y > 0.0 && puv.x < 1.0 && puv.y < 1.0;
+  vec4 h = clamp(texture2D(tHist, puv), mn, mx);
+  gl_FragColor = mix(c, h, inside ? blend : 0.0);
+}
+`;

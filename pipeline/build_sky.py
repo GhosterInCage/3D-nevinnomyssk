@@ -1,6 +1,8 @@
 """Build the sky module's procedural cloud weather texture.
 
-Output: public/textures/sky/clouds.png  (512x512 RGBA8, seamlessly tileable)
+Outputs:
+  public/textures/sky/clouds.png   (512x512 RGBA8, seamlessly tileable)
+  public/textures/sky/noise3d.bin  (64^3 uint8, tileable 3D inverted-Worley fbm, x fastest)
 
 Channels (each histogram-equalised to ~uniform [0,1] so that a threshold of
 (1 - coverage) yields approximately `coverage` sky fraction):
@@ -92,6 +94,28 @@ def remap(x, a, b, c, d):
     return c + (x - a) / (b - a) * (d - c)
 
 
+def worley3(rng, n, cells):
+    """Periodic 3D Worley F1 on an n^3 grid (normalised to ~[0,1])."""
+    pts = rng.random((cells, cells, cells, 3))
+    g = (np.arange(n) + 0.5) / n * cells
+    zs, ys, xs = np.meshgrid(g, g, g, indexing="ij")
+    cx, cy, cz = np.floor(xs).astype(int), np.floor(ys).astype(int), np.floor(zs).astype(int)
+    best = np.full(xs.shape, 9.0)
+    for dz in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                nx, ny, nz = cx + dx, cy + dy, cz + dz
+                p = pts[nz % cells, ny % cells, nx % cells]
+                d = (p[..., 0] + nx - xs) ** 2 + (p[..., 1] + ny - ys) ** 2 + (p[..., 2] + nz - zs) ** 2
+                best = np.minimum(best, d)
+    return np.clip(np.sqrt(best), 0, 1)
+
+
+def noise3d(rng, n=64):
+    v = (1 - worley3(rng, n, 4)) * 0.55 + (1 - worley3(rng, n, 8)) * 0.3 + (1 - worley3(rng, n, 16)) * 0.15
+    return equalize(v)
+
+
 def main():
     seed = 7
     if "--seed" in sys.argv:
@@ -126,6 +150,11 @@ def main():
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     Image.fromarray(img, "RGBA").save(OUT, optimize=True)
     print("wrote", OUT, os.path.getsize(OUT) // 1024, "KB")
+
+    n3 = noise3d(np.random.default_rng(seed + 11))
+    out3 = os.path.join(os.path.dirname(OUT), "noise3d.bin")
+    np.clip(np.round(n3 * 255), 0, 255).astype(np.uint8).tofile(out3)  # [z][y][x], x fastest
+    print("wrote", out3, os.path.getsize(out3) // 1024, "KB")
 
 
 if __name__ == "__main__":

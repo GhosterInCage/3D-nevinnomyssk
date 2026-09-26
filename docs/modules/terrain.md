@@ -116,8 +116,8 @@ The textures are 14 layers at 1024², stored as webp (8.5 MB total):
 ## Runtime (`src/modules/terrain`)
 
 - **`cdlod.ts`: CDLOD quadtree.** The quadtree has 9 levels with 80 m leaves. Every patch is a 32×32 grid (16 at low quality, 64 at ultra). Two instanced draw calls are made: full patches and N/2 "partial parent" patches. Vertices morph to the next coarser grid in the outer 35 % of each LOD band, which avoids cracks and popping.
-  - Ranges are 160 m, 400 m, 1.5 km, 3.2 km and so on. That gives 2.5 m vertex spacing within about 160 m, 5 m within 400 m, and 10 m (the source resolution) within 1.3–1.5 km.
-  - Measured load is about 70–180k triangles; the high quality budget is 400k or less.
+  - Ranges are 160 m, 400 m, 1.5 km, 3.2 km and so on, and the two finest bands are ×1.35 at high and ×1.8 at ultra. At high that gives 2.5 m vertex spacing within about 215 m, 5 m within 540 m, and 10 m (the source resolution) within 1.5 km.
+  - Measured load at high is 127k–355k triangles across the standard presets, against a budget of 400k or less. That count includes patches kept within 700 m behind the camera as shadow casters. Medium is about 70k–180k.
   - Node bounds come from a min/max pyramid, which is rebuilt if `HeightField.markDirty()` is called.
 - **Vertex stage** (`shaders.ts`, `VERT_*`). Heights (stored at 4 cm steps in height.bin.gz) use Catmull-Rom bicubic interpolation over `ctx.heightfield.texture`, with 16 `texelFetch` calls. The surface passes exactly through the samples. Micro relief of ±6 cm is added within 140 m of the camera on natural ground only; it is never applied on urban, gravel, pebble or mud classes. The shadow depth material uses the same displacement, and morphing uses the main camera for every pass.
 - **Ground material.** This is a `MeshStandardMaterial` with `onBeforeCompile`, registered through `ctx.registerMaterial`, so CSM, cloud shadows, IBL, fog and tone mapping all work. The hook is locked with a property accessor so later assignments, such as `CSM.setupMaterial`, are chained instead of replacing ours. Per pixel it does the following:

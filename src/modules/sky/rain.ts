@@ -20,7 +20,7 @@ void main() {
   float fall = uSpeed * (0.8 + seed.z * 0.4);
   vec3 vel = vec3(uWind.x, -fall, uWind.y);
   vec3 local = vec3(seed.x * uBox.x, seed.z * 7.13 * uBox.y, seed.y * uBox.z) + vel * uTime;
-  vec3 origin = uCam - uBox * vec3(0.5, 0.6, 0.5);
+  vec3 origin = uCam - uBox * vec3(0.5, 0.4, 0.5);
   vec3 wp = origin + mod(local - origin, uBox);
   vec3 vdir = normalize(vel);
   vec3 toCam = uCam - wp;
@@ -31,7 +31,7 @@ void main() {
   vU = position.x * 2.0;
   // hide drops that are too close (huge) or far; only a fraction active for light rain
   float isOn = step(seed.y * 0.999, uAmount * 1.1);
-  vAlpha = isOn * smoothstep(0.6, 2.5, dist) * (1.0 - smoothstep(uBox.x * 0.32, uBox.x * 0.5, dist));
+  vAlpha = isOn * smoothstep(1.2, 4.0, dist) * (1.0 - smoothstep(uBox.x * 0.3, uBox.x * 0.5, dist));
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
 }
 `;
@@ -70,11 +70,11 @@ export class Rain {
       uniforms: {
         uCam: { value: new THREE.Vector3() },
         uTime: { value: 0 },
-        uBox: { value: new THREE.Vector3(40, 26, 40) },
+        uBox: { value: new THREE.Vector3(30, 18, 30) },
         uWind: { value: new THREE.Vector2() },
         uSpeed: { value: 8.5 },
         uLen: { value: 0.55 },
-        uWidth: { value: 0.012 },
+        uWidth: { value: 0.008 },
         uAmount: { value: 0 },
         uColor: { value: new THREE.Color(0.2, 0.2, 0.22) },
         uOpacity: { value: 0.35 },
@@ -82,6 +82,7 @@ export class Rain {
       transparent: true,
       depthWrite: false,
       depthTest: true,
+      side: THREE.DoubleSide,
     });
     this.mesh = new THREE.Mesh(this.geo, this.mat);
     this.mesh.name = 'sky:rain';
@@ -95,7 +96,7 @@ export class Rain {
 
   private countFor(): number {
     const q = this.ctx.settings.quality;
-    return q === 'low' ? 2500 : q === 'medium' ? 7000 : 14000;
+    return q === 'low' ? 4000 : q === 'medium' ? 10000 : 18000;
   }
 
   applyQuality(): void {
@@ -116,6 +117,6 @@ export class Rain {
     // streak radiance ~ average environment radiance (drops refract the overcast sky)
     const a = fogAmb;
     u.uColor.value.setRGB(a.x * 1.15 + 0.002, a.y * 1.15 + 0.002, a.z * 1.15 + 0.003);
-    u.uOpacity.value = 0.22 + 0.22 * amount;
+    u.uOpacity.value = 0.14 + 0.16 * amount;
   }
 }

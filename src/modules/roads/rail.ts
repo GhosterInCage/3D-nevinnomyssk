@@ -46,8 +46,20 @@ export class Rail {
     const rail = this.roads.data.objects.rail;
     ctx.scene.add(this.root);
     for (const c of rail.crossings) this.cross.add({ x: c[0], z: c[1], r: c[2] });
-    this.steel = ctx.registerMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.75, roughness: 0.38 }));
-    this.sleeperMat = ctx.registerMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.0, roughness: 0.85 }));
+    // one material for rails + sleepers: aEmit = 1 marks steel (metallic, smoother)
+    const m = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 1, roughness: 1 });
+    m.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float aEmit;\nvarying float vSteel;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSteel = aEmit;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vSteel;')
+        .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(0.0, 0.8, vSteel);')
+        .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = mix(0.85, 0.36, vSteel);');
+    };
+    m.customProgramCacheKey = () => 'roads-rail';
+    this.steel = ctx.registerMaterial(m);
+    this.sleeperMat = this.steel;
     for (let i = 0; i < rail.tracks.length; i++) {
       const t = rail.tracks[i];
       const pl = new Polyline(t.p);
@@ -88,7 +100,7 @@ export class Rail {
   private buildChunk(c: Chunk): THREE.Group {
     const { t, pl } = this.tracks[c.track];
     const rails = new MeshBuilder();
-    const sl = new MeshBuilder();
+    const sl = rails; // sleepers go into the same buffer (aEmit = 0)
     const concrete = t.el === 1 || (t.dis === 0 && t.g >= 0);
     const topCol: [number, number, number] = t.dis ? [0.32, 0.2, 0.12] : [0.62, 0.62, 0.64];
     const sideCol: [number, number, number] = [0.26, 0.16, 0.1];
@@ -107,12 +119,12 @@ export class Rail {
         const y = this.railTop(x, z, t.g);
         const hw = 0.037;
         const ids = [
-          rails.vert(x - nx * hw, y - 0.17, z - nz * hw, -nx, 0, -nz, ...sideCol),
-          rails.vert(x - nx * hw, y, z - nz * hw, -nx, 0.2, -nz, ...sideCol),
-          rails.vert(x - nx * hw, y, z - nz * hw, 0, 1, 0, ...topCol),
-          rails.vert(x + nx * hw, y, z + nz * hw, 0, 1, 0, ...topCol),
-          rails.vert(x + nx * hw, y, z + nz * hw, nx, 0.2, nz, ...sideCol),
-          rails.vert(x + nx * hw, y - 0.17, z + nz * hw, nx, 0, nz, ...sideCol),
+          rails.vert(x - nx * hw, y - 0.17, z - nz * hw, -nx, 0, -nz, ...sideCol, 1),
+          rails.vert(x - nx * hw, y, z - nz * hw, -nx, 0.2, -nz, ...sideCol, 1),
+          rails.vert(x - nx * hw, y, z - nz * hw, 0, 1, 0, ...topCol, 1),
+          rails.vert(x + nx * hw, y, z + nz * hw, 0, 1, 0, ...topCol, 1),
+          rails.vert(x + nx * hw, y, z + nz * hw, nx, 0.2, nz, ...sideCol, 1),
+          rails.vert(x + nx * hw, y - 0.17, z + nz * hw, nx, 0, nz, ...sideCol, 1),
         ];
         const pv = prev[r];
         if (pv.length) {
@@ -150,16 +162,10 @@ export class Rail {
       }
     }
     const grp = new THREE.Group();
-    const rg = rails.build(true);
+    const rg = rails.build(true, true);
     if (rg) {
       const m = new THREE.Mesh(rg, this.steel);
       m.castShadow = true; m.receiveShadow = true;
-      grp.add(m);
-    }
-    const sg = sl.build(true);
-    if (sg) {
-      const m = new THREE.Mesh(sg, this.sleeperMat);
-      m.receiveShadow = true;
       grp.add(m);
     }
     grp.name = 'roads-rail-chunk';

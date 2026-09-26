@@ -527,11 +527,14 @@ def params_for(k, r, t, lv, labelled, F, rnd, hovr, minh):
         p['extra'] = 0.6
     elif t in (T_IND, T_WARE, T_UTIL):
         if t == T_IND:
-            h = sh if sh > 0 else 10.0
+            rec = float(F['sh_rec'][k]) if 'sh_rec' in F and F['sh_min'][k] < 0.65 else 0.0
+            h = max(sh, rec)
+            h = h if h > 0 else 10.0
             # DSM sees big halls: blend in its footprint max for large footprints
             if a > 3000 and F['dsm_fmax'][k] > 4:
                 h = max(h, 0.8 * F['dsm_fmax'][k])
-            h = float(np.clip(h * rnd.rng(0.85, 1.1), 6.0, 32.0))
+            hmax = 45.0 if (a < 2500 and elong < 2.5) else 32.0  # compact process buildings can be tall
+            h = float(np.clip(h * rnd.rng(0.85, 1.1), 6.0, hmax))
             p['levels'] = max(1, int(round(h / 5.0)))
             p['floorH'] = h / p['levels']
             p['wall'] = rnd.pick([W_IND, W_WARE, W_BRICK5], [0.55, 0.25, 0.2])
@@ -648,6 +651,11 @@ def side_normals(g):
 
 def main():
     t0 = time.time()
+    try:
+        import buildings_textures
+        buildings_textures.main()
+    except Exception as e:  # textures are optional for the data build
+        print("[textures] skipped:", e)
     recs = load_clean(force=REFRESH)
     fcache = os.path.join(PROC, "buildings_features.pkl")
     scache = os.path.join(PROC, "buildings_shadow.pkl")

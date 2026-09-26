@@ -17,6 +17,8 @@ export class AtmosphereEffect extends Effect {
   readonly skCloudDist = new THREE.Uniform<THREE.Texture | null>(null);
   readonly skGroundAlt = new THREE.Uniform(350);
   readonly skCloudTexel = new THREE.Uniform(new THREE.Vector2(1, 1));
+  readonly skShafts = new THREE.Uniform<THREE.Texture | null>(null);
+  readonly skShaftColor = new THREE.Uniform(new THREE.Vector3());
 
   constructor(private cam: THREE.PerspectiveCamera, shared: SkyUniforms) {
     const uniforms = new Map<string, THREE.Uniform>();
@@ -37,6 +39,8 @@ export class AtmosphereEffect extends Effect {
     uniforms.set('skCloudDist', this.skCloudDist);
     uniforms.set('skGroundAlt', this.skGroundAlt);
     uniforms.set('skCloudTexel', this.skCloudTexel);
+    uniforms.set('skShafts', this.skShafts);
+    uniforms.set('skShaftColor', this.skShaftColor);
   }
 
   override get mainCamera(): THREE.Camera { return this.cam; }
@@ -100,8 +104,16 @@ vec3 gAgX(vec3 color) {
   color = G_2020_TO_SRGB * color;
   return clamp(color, 0.0, 1.0);
 }
+uniform float gNight;
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec3 c = inputColor.rgb * gExposure;
+  // scotopic (Purkinje) shift: dim parts of night scenes lose saturation and turn blue;
+  // bright artificial lights keep their colour
+  if (gNight > 0.0) {
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float w = gNight * (1.0 - smoothstep(0.03, 0.5, l)) * 0.75;
+    c = mix(c, l * vec3(0.62, 0.8, 1.25), w);
+  }
   vec2 d = (uv - 0.5) * vec2(1.0, 0.75);
   c *= 1.0 - gVignette * dot(d, d) * 2.0;
   c += gLift;
@@ -121,6 +133,7 @@ export class GradeEffect extends Effect {
         ['gPower', new THREE.Uniform(1.08)],
         ['gLift', new THREE.Uniform(new THREE.Vector3())],
         ['gAgx', new THREE.Uniform(1)],
+        ['gNight', new THREE.Uniform(0)],
       ]),
     });
   }

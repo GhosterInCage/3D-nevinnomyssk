@@ -11,6 +11,7 @@ attribute vec4 gParam;     // size (m), blink, day visibility, phase
 uniform float uNight;
 uniform float uTime;
 uniform float uScale;      // pixels per metre at 1 m distance
+uniform float uGain;       // compensates the sky module's night exposure
 varying vec3 vCol;
 varying float vA;
 void main() {
@@ -20,8 +21,10 @@ void main() {
   float vis = mix(gParam.z, 1.0, uNight) * on;
   float px = gParam.x * uScale / d;
   // keep a minimum apparent size for beacons far away, fade them with distance instead
-  float minPx = mix(1.5, 3.5, uNight);
-  vA = vis * clamp(px / minPx, 0.15, 1.0) * clamp(1.0 - d / 30000.0, 0.0, 1.0);
+  float minPx = mix(1.5, 4.5, uNight);
+  // beacons (>= 2 m) stay visible far away, small work lights fade with their apparent size
+  float floorA = gParam.x >= 2.0 ? 0.5 : 0.0;
+  vA = vis * uGain * clamp(px / minPx, floorA, 1.0) * clamp(1.0 - d / 30000.0, 0.0, 1.0);
   gl_PointSize = clamp(max(px, minPx), 0.0, 96.0);
   vCol = gColor;
   gl_Position = projectionMatrix * mv;
@@ -59,7 +62,7 @@ export class Glows {
     this.material = new THREE.ShaderMaterial({
       vertexShader: GLOW_VS,
       fragmentShader: GLOW_FS,
-      uniforms: { uNight: { value: 0 }, uTime: { value: 0 }, uScale: { value: 600 } },
+      uniforms: { uNight: { value: 0 }, uTime: { value: 0 }, uScale: { value: 600 }, uGain: { value: 1 } },
       transparent: true,
       depthWrite: false,
       blending: THREE.CustomBlending,
@@ -74,8 +77,9 @@ export class Glows {
     this.points.userData.noPathTrace = true;
     this.points.name = 'landmark-glows';
   }
-  update(night: number, time: number, cam: THREE.PerspectiveCamera, heightPx: number): void {
+  update(night: number, time: number, cam: THREE.PerspectiveCamera, heightPx: number, exposure = 1): void {
     const u = this.material.uniforms;
+    u.uGain.value = THREE.MathUtils.clamp(4.0 / Math.max(exposure, 1e-3), 0.25, 1.0);
     u.uNight.value = night;
     u.uTime.value = time;
     u.uScale.value = heightPx / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2));
@@ -96,6 +100,7 @@ void main() {
 const FLAME_FS = /* glsl */ `
 uniform float uTime;
 uniform float uSeed;
+uniform float uGain;
 varying vec2 vUv;
 float h21(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 45758.5453); }
 float vnoise(vec2 p) {
@@ -121,7 +126,7 @@ void main() {
   c = mix(c, vec3(1.0, 0.95, 0.75), smoothstep(0.55, 0.95, heat));
   c += vec3(0.1, 0.25, 0.9) * (1.0 - smoothstep(0.0, 0.12, y)) * body * 0.6;   // blue base
   if (a < 0.01) discard;
-  gl_FragColor = vec4(c * a * 3.0, a);
+  gl_FragColor = vec4(c * a * 2.5 * uGain, a);
 }`;
 
 export function makeFlame(height = 1.1, width = 0.7, planes = 3): THREE.Group {
@@ -133,7 +138,7 @@ export function makeFlame(height = 1.1, width = 0.7, planes = 3): THREE.Group {
     const m = new THREE.ShaderMaterial({
       vertexShader: FLAME_VS,
       fragmentShader: FLAME_FS,
-      uniforms: { uTime: { value: 0 }, uSeed: { value: i * 3.17 } },
+      uniforms: { uTime: { value: 0 }, uSeed: { value: i * 3.17 }, uGain: { value: 1 } },
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
@@ -151,10 +156,11 @@ export function makeFlame(height = 1.1, width = 0.7, planes = 3): THREE.Group {
   return grp;
 }
 
-export function updateFlame(grp: THREE.Group, t: number): void {
+export function updateFlame(grp: THREE.Group, t: number, exposure = 1): void {
   for (const c of grp.children) {
     const m = (c as THREE.Mesh).material as THREE.ShaderMaterial;
     m.uniforms.uTime.value = t;
+    m.uniforms.uGain.value = THREE.MathUtils.clamp(1.6 / Math.max(exposure, 1e-3), 0.12, 1.2);
   }
 }
 
@@ -165,44 +171,53 @@ const PLUME_VS = /* glsl */ `
 attribute vec4 pData;        // t (0..1 along plume), puff size (m), seed, stack index
 attribute vec4 pStack;       // stack top x, y, z, strength
 uniform float uTime;
-uniform vec2 uWind;          // m/s world xz
+uniform vec2 uWind;          // m/s world xz (10 m wind; x2 at stack height)
 uniform float uRise;
-uniform vec3 uSunDir;
 varying float vA;
 varying vec2 vC;
-varying float vLit;
+varying vec2 vN;
+varying float vAge;
 void main() {
-  float t = fract(pData.x + uTime * 0.012 * (0.7 + pData.z * 0.6));
-  float age = t * 160.0;                                  // seconds
+  float t = fract(pData.x + uTime * 0.006);
+  float age = t * t * 240.0;                              // seconds since emission (dense near the source)
   vec3 top = pStack.xyz;
-  float rise = uRise * (1.0 - exp(-age / 25.0)) * (0.7 + 0.6 * pData.z);
-  vec2 drift = uWind * age * 0.9;
+  float rise = uRise * (1.0 - exp(-age / 30.0)) * (0.75 + 0.5 * pData.z);
+  vec2 w = uWind * 1.8 + vec2(0.4, -0.2);
+  vec2 drift = w * age;
   vec3 c = top + vec3(drift.x, rise, drift.y);
-  c.xz += (vec2(fract(pData.z * 91.7), fract(pData.z * 37.3)) - 0.5) * (4.0 + age * 0.5);
-  float size = pData.y * (1.0 + age * 0.09);
+  // turbulent meander grows with age
+  float m = age * 0.12;
+  c.x += sin(pData.z * 40.0 + age * 0.05) * m;
+  c.z += cos(pData.z * 23.0 + age * 0.04) * m;
+  c.y += sin(pData.z * 17.0 + age * 0.03) * m * 0.5;
+  float size = pData.y * (1.0 + age * 0.11) * (0.8 + 0.4 * pData.z);
   vec2 corner = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);
   vC = corner;
+  vN = corner * 0.35 + vec2(pData.z * 7.3, pData.z * 3.1);
+  vAge = t;
   vec4 mv = viewMatrix * vec4(c, 1.0);
   mv.xy += corner * size;
-  vA = pStack.w * smoothstep(0.0, 0.04, t) * (1.0 - smoothstep(0.35, 1.0, t)) * 0.55;
-  vec3 toCam = normalize(cameraPosition - c);
-  vLit = 0.55 + 0.45 * max(dot(uSunDir, vec3(0.0, 1.0, 0.0)), 0.0);
+  vA = pStack.w * smoothstep(0.0, 0.05, t) * (1.0 - smoothstep(0.3, 0.95, t)) / (1.0 + age * 0.02);
   gl_Position = projectionMatrix * mv;
 }`;
 
 const PLUME_FS = /* glsl */ `
 uniform vec3 uLight;
 uniform vec3 uAmb;
+uniform sampler2D uNoise;
 varying float vA;
 varying vec2 vC;
-varying float vLit;
+varying vec2 vN;
+varying float vAge;
 void main() {
   float r2 = dot(vC, vC);
   if (r2 > 1.0) discard;
-  float a = vA * (1.0 - r2) * (1.0 - r2);
-  // fake self shadowing: lighter at the top-sun side
-  float shade = 0.75 + 0.25 * vC.y;
-  vec3 col = uAmb + uLight * shade * vLit;
+  vec4 n = texture2D(uNoise, vN);
+  float body = (1.0 - r2) * (1.0 - r2) * clamp(0.45 + 1.1 * (n.g - 0.35) + 0.5 * (n.r - 0.5), 0.0, 1.5);
+  float a = clamp(vA * body, 0.0, 1.0) * 0.6;
+  if (a < 0.003) discard;
+  float shade = 0.72 + 0.28 * vC.y;
+  vec3 col = uAmb * (1.0 - vAge * 0.2) + uLight * shade;
   gl_FragColor = vec4(col * a, a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -211,7 +226,7 @@ void main() {
 export class Plumes {
   readonly mesh: THREE.Mesh;
   readonly material: THREE.ShaderMaterial;
-  constructor(stacks: Array<{ x: number; y: number; z: number; strength: number; size: number }>, puffs = 48) {
+  constructor(stacks: Array<{ x: number; y: number; z: number; strength: number; size: number }>, noise: THREE.Texture | null, puffs = 64) {
     const n = stacks.length * puffs;
     const base = new THREE.PlaneGeometry(1, 1);
     const g = new THREE.InstancedBufferGeometry();
@@ -223,7 +238,8 @@ export class Plumes {
     stacks.forEach((s, si) => {
       for (let i = 0; i < puffs; i++, k++) {
         const seed = ((i * 7919 + si * 104729) % 1000) / 1000;
-        pd.set([i / puffs, s.size * (0.8 + seed * 0.5), seed, si], k * 4);
+        // phases jittered so puffs do not march in lock-step
+        pd.set([(i + seed * 0.8) / puffs, s.size * (0.7 + seed * 0.6), seed, si], k * 4);
         ps.set([s.x, s.y, s.z, s.strength], k * 4);
       }
     });
@@ -234,7 +250,7 @@ export class Plumes {
       vertexShader: PLUME_VS,
       fragmentShader: PLUME_FS,
       uniforms: {
-        uTime: { value: 0 }, uWind: { value: new THREE.Vector2(2, -1) }, uRise: { value: 60 },
+        uTime: { value: 0 }, uWind: { value: new THREE.Vector2(2, -1) }, uRise: { value: 45 }, uNoise: { value: noise },
         uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uLight: { value: new THREE.Color(0.9, 0.9, 0.88) },
         uAmb: { value: new THREE.Color(0.35, 0.38, 0.42) },
       },

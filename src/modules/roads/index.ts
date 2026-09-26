@@ -5,7 +5,7 @@ import type { AppContext, CityModule } from '../../core/context';
 import { loadRoadsData, type PolyRec, type RoadsData, type TileRec } from './data';
 import { Ground, buildSuperTile } from './ground';
 import { Bridges, makeRailingTexture } from './bridges';
-import { createSurfaceMaterial, loadArrayTexture, makeLampMap, makeNoiseTexture, makeSharedUniforms, type SharedUniforms } from './materials';
+import { ELEV, createSurfaceMaterial, loadArrayTexture, makeLampMap, makeNoiseTexture, makeSharedUniforms, type SharedUniforms } from './materials';
 import { RoadGraph, signalState } from './service';
 import { Furniture } from './furniture';
 import { Rail } from './rail';
@@ -45,6 +45,7 @@ class Roads {
         sun.target.position.copy(ctx.camera.position);
         sun.intensity = 3 * (1 - ctx.env.night) + 0.02;
         hemi.intensity = 1.0 * (1 - ctx.env.night) + 0.03;
+        (ctx.scene.background as THREE.Color).setRGB(0.62, 0.72, 0.85).multiplyScalar(1 - 0.95 * ctx.env.night);
       });
     }
   }
@@ -53,7 +54,8 @@ class Roads {
     const ctx = this.ctx;
     const q = ctx.settings.quality;
     const T0 = performance.now();
-    const lap = (what: string) => console.info(`[roads] ${what} ${Math.round(performance.now() - T0)}ms`);
+    const laps: string[] = [];
+    const lap = (what: string) => laps.push(`${what} ${Math.round(performance.now() - T0)}`);
     const texSize = q === 'low' ? 512 : 1024;
     const [data, alb, nrm] = await Promise.all([
       loadRoadsData(),
@@ -99,7 +101,7 @@ class Roads {
     lap('bridges');
 
     // graph + service
-    this.graph = new RoadGraph(data, (x, z, b) => this.surfaceY(x, z, b));
+    this.graph = new RoadGraph(data, (x, z, b) => this.roadSurfaceY(x, z, b));
     this.provideService();
     lap('graph');
 
@@ -117,7 +119,7 @@ class Roads {
     };
     for (const t of data.meta.tiles) getST(t.i, t.j).tiles.push(t);
     for (const p of data.polys) {
-      if (p.kind > 2) continue; // skirts, curbs, markings are drawn with the ground
+      if (p.kind > 2 && p.kind !== 8) continue; // skirts, curbs, markings (+ platform lines) are drawn with the ground
       getST(p.tile % NT, Math.floor(p.tile / NT)).polys.push(p);
     }
     this.supers = [...byKey.values()];
@@ -151,7 +153,14 @@ class Roads {
     await safe('rail', async () => { this.rail = new Rail(ctx, this); await this.rail.init(); });
     await safe('furniture', async () => { this.furniture = new Furniture(ctx, this); await this.furniture.init(); });
     await safe('power', async () => { this.power = new Power(ctx, this); await this.power.init(); });
-    console.info(`[roads] ${this.supers.length} ground super-tiles, ~${Math.round(this.tris / 1000)}k triangles`);
+    lap('props');
+    console.info(`[roads] ${this.supers.length} ground super-tiles, ~${Math.round(this.tris / 1000)}k ground triangles; ms: ${laps.join(', ')}`);
+  }
+
+  /** Top of the carriageway (what wheels touch): deck of `group`, or terrain + asphalt elevation. */
+  roadSurfaceY(x: number, z: number, group: number): number {
+    if (group >= 0) return this.bridges.heightAt(group, x, z);
+    return this.ground.height(x, z) + ELEV[0];
   }
 
   /** Surface height at a polyline point: bridge deck of `group`, or the terrain. */
@@ -193,6 +202,8 @@ class Roads {
       distanceToRoad: (x: number, z: number, maxDist = 50) => g.distanceToRoad(x, z, maxDist),
       /** Terrain (bicubic, as rendered) or deck height when (x,z) lies on bridge group `bridge`. */
       heightAt: (x: number, z: number, bridge = -1) => self.surfaceY(x, z, bridge),
+      /** top of the carriageway (wheel contact): deck of bridge group, or terrain + 8.5 cm asphalt */
+      roadSurfaceY: (x: number, z: number, bridge = -1) => self.roadSurfaceY(x, z, bridge),
       groundHeight: (x: number, z: number) => self.ground.height(x, z),
       bridges: () => self.bridges.list.filter(Boolean).map((b) => ({ id: b!.rec.id, name: b!.rec.name, kind: b!.rec.kind, axis: b!.rec.axis })),
       signals: this.data.objects.furniture.signals.map((s) => ({ x: s[0], z: s[1], heading: s[2], phase: s[3], node: s[4] })),

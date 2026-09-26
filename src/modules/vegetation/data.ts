@@ -71,7 +71,7 @@ export class VegData {
   }
 
   /** Ensure base heights for a cell (sampled so trunks never float on slopes). */
-  ensureHeights(c: number, hf: HeightField): void {
+  ensureHeights(c: number, hf: HeightField | { sample(x: number, z: number): number }): void {
     if (this.cellY[c]) return;
     this.cellY[c] = 1;
     const s = this.cellStart[c], e = this.cellStart[c + 1];

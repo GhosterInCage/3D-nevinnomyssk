@@ -70,6 +70,10 @@ vec4 lmTri(vec3 p, vec3 n, float s) {
 
 // fold a bit field
 float lmBit(float fl, float b) { return mod(floor(fl / b), 2.0); }
+// anti-aliased line mask: d = distance to the line centre (m), w = half width (m), px = m per pixel
+float lmLine(float d, float w, float px) { float a = max(px, 1e-4); return (1.0 - smoothstep(w - a, w + a, d)) * min(1.0, 1.5 * w / a); }
+// relief only where a feature of width w spans a few pixels (avoids derivative sparkle)
+float lmBumpOk(float w, float px) { return 1.0 - smoothstep(w * 0.25, w * 0.8, px); }
 
 void lmSurface(vec3 baseCol) {
   float pat = floor(vLmSurf.x + 0.5);
@@ -96,10 +100,10 @@ void lmSurface(vec3 baseCol) {
   } else if (pat < 1.5) {
     // CONCRETE: slip-form lifts (1.5 m), formwork boards, stains
     float lift = abs(fract(uv.y / 1.5 + 0.5) - 0.5) * 1.5;
-    float j = 1.0 - smoothstep(0.006, 0.02, lift);
-    float fade = 1.0 - smoothstep(0.02, 0.06, px);
-    lmS.alb *= 1.0 - j * 0.18 * fade;
-    lmS.h += -j * 0.006 * fade;
+    float j = lmLine(lift, 0.012, px);
+    float fade = 1.0 - smoothstep(0.02, 0.08, px);
+    lmS.alb *= 1.0 - j * 0.16 * fade;
+    lmS.h += -j * 0.006 * lmBumpOk(0.024, px);
     lmS.alb *= 0.92 + nz.r * 0.16;
   } else if (pat < 2.5) {
     // BRICK: 250 x 65 mm, 10 mm joints, running bond
@@ -109,55 +113,61 @@ void lmSurface(vec3 baseCol) {
     vec2 cell = floor(b);
     vec2 f = fract(b);
     float mx = min(f.x, 1.0 - f.x) * 0.26, my = min(f.y, 1.0 - f.y) * 0.075;
-    float mortar = 1.0 - smoothstep(0.003, 0.0065, min(mx, my));
-    float fade = 1.0 - smoothstep(0.012, 0.03, px);
+    float mortar = lmLine(min(mx, my), 0.005, px * 0.7);
+    float fade = 1.0 - smoothstep(0.008, 0.025, px);
     float hb = lmHash(cell + floor(p.y * 0.01));
     vec3 tint = vec3(1.0 + (hb - 0.5) * 0.28, 1.0 + (hb - 0.5) * 0.22, 1.0 + (hb - 0.5) * 0.2);
     if (hb > 0.93) tint *= 0.72;                    // over-burnt bricks
     lmS.alb *= mix(vec3(1.0), tint, fade);
     lmS.over = baseCol * 0.35 + vec3(0.42, 0.40, 0.37) * 0.65;
     lmS.overA = mortar * fade * 0.85;
-    lmS.h += -mortar * 0.005 * fade + (nz.r - 0.5) * 0.002;
+    lmS.h += -mortar * 0.004 * lmBumpOk(0.01, px) + (nz.r - 0.5) * 0.002;
   } else if (pat < 3.5) {
     // CORRUGATED / profiled sheet, ribs along v (period 0.2 m)
     float w = fract(uv.x / 0.2);
     float prof = smoothstep(0.1, 0.25, w) - smoothstep(0.55, 0.7, w);
-    float fade = 1.0 - smoothstep(0.03, 0.09, px);
+    float fade = lmBumpOk(0.1, px);
     lmS.h += prof * 0.02 * fade;
-    lmS.alb *= 1.0 - (1.0 - fade) * 0.04;
-    // panel seams every 1 m wide sheet, 6 m tall
-    float seam = 1.0 - smoothstep(0.01, 0.03, abs(fract(uv.y / 6.0 + 0.5) - 0.5) * 6.0);
-    lmS.alb *= 1.0 - seam * 0.2 * (1.0 - smoothstep(0.05, 0.15, px));
+    lmS.alb *= 1.0 - (1.0 - fade) * 0.04 + prof * 0.05 * fade;
+    // sheet laps every 6 m
+    float seam = lmLine(abs(fract(uv.y / 6.0 + 0.5) - 0.5) * 6.0, 0.02, px);
+    lmS.alb *= 1.0 - seam * 0.18;
   } else if (pat < 4.5) {
     // PANEL: 6 x 1.2 m reinforced-concrete wall panels
     vec2 g = vec2(uv.x / 6.0, uv.y / 1.2);
     vec2 cell = floor(g); vec2 f = fract(g);
     float sx = min(f.x, 1.0 - f.x) * 6.0, sy = min(f.y, 1.0 - f.y) * 1.2;
-    float seam = 1.0 - smoothstep(0.012, 0.035, min(sx, sy));
-    float fade = 1.0 - smoothstep(0.06, 0.2, px);
+    float seam = lmLine(min(sx, sy), 0.018, px);
+    float fade = 1.0 - smoothstep(0.05, 0.25, px);
     float hp = lmHash(cell);
     lmS.alb *= 1.0 + (hp - 0.5) * 0.12;
-    lmS.alb *= 1.0 - seam * 0.35 * fade;
-    lmS.h += -seam * 0.01 * fade;
+    lmS.alb *= 1.0 - seam * 0.3 * fade;
+    lmS.h += -seam * 0.008 * lmBumpOk(0.036, px);
   } else if (pat < 5.5) {
     // GLAZING: steel mullions every 1.5 m, transoms every 1.2 m
     vec2 g = vec2(uv.x / 1.5, uv.y / 1.2);
     vec2 cell = floor(g); vec2 f = fract(g);
     float fx = min(f.x, 1.0 - f.x) * 1.5, fy = min(f.y, 1.0 - f.y) * 1.2;
-    float frame = 1.0 - smoothstep(0.04, 0.06, min(fx, fy));
-    float fade = 1.0 - smoothstep(0.04, 0.12, px);
+    float frame = lmLine(min(fx, fy), 0.05, px);
+    float fade = 1.0 - smoothstep(0.03, 0.12, px);
     float hp = lmHash(cell + floor(p.xz * 0.01));
-    vec3 glass = vec3(0.045, 0.06, 0.065) * (0.8 + hp * 0.4);
-    float board = step(0.93, hp);                    // whitewashed / boarded panes
-    glass = mix(glass, vec3(0.45, 0.45, 0.42), board);
+    // dusty industrial glass: grey-green, partly translucent-looking
+    vec3 glass = vec3(0.11, 0.13, 0.125) * (0.75 + hp * 0.5) * (0.85 + nz.g * 0.3);
+    float board = step(0.975, hp);                   // replaced panes (plastic / panels)
+    glass = mix(glass, vec3(0.3, 0.3, 0.28), board);
     vec3 frameCol = baseCol;
-    vec3 c = mix(glass, frameCol, frame * fade + (1.0 - fade) * 0.22);
+    vec3 c = mix(glass, frameCol, frame * fade + (1.0 - fade) * 0.25);
     lmS.over = c; lmS.overA = 1.0;
-    lmS.rough = mix(0.08 + board * 0.8, 0.6, frame * fade);
+    lmS.rough = mix(0.22 + board * 0.6 + nz.r * 0.15, 0.6, frame * fade);
     lmS.metal = 0.0;
-    lmS.h += frame * 0.02 * fade;
-    float lit = step(hp, lmLitFrac) * (1.0 - board) * (1.0 - frame) * lmBit(fl, 4.0);
-    lmS.emis = vec3(1.0, 0.82, 0.55) * lit * lmNight * 1.6;
+    lmS.h += frame * 0.02 * lmBumpOk(0.1, px);
+    // halls are lit section by section (18 m wide, whole glazing band), mercury / sodium lamps;
+    // the glow through dusty glass is soft and uneven
+    vec2 bay = floor(uv / vec2(18.0, 40.0));
+    float hbay = lmHash(bay + floor(p.xz * 0.004) * 7.0);
+    float lit = step(hbay, lmLitFrac + 0.2) * (1.0 - board) * (1.0 - frame * fade) * lmBit(fl, 4.0);
+    vec3 lampC = hbay < 0.3 ? vec3(0.8, 0.92, 0.85) : vec3(1.0, 0.72, 0.42);
+    lmS.emis = lampC * lmNight * (lit * (0.016 + hp * 0.012) * (0.7 + nz.g * 0.6) + 0.0015) * (1.0 - board);
   } else if (pat < 6.5) {
     // METAL: painted steel with rust runs
     float rust = smoothstep(0.55, 0.8, nz.a) * grime * vert;
@@ -178,36 +188,33 @@ void lmSurface(vec3 baseCol) {
   } else if (pat < 9.5) {
     // GRATING
     float fade = 1.0 - smoothstep(0.01, 0.04, px);
-    float gx = 1.0 - smoothstep(0.0, 0.004, abs(fract(uv.x / 0.034) - 0.5) * 0.034 - 0.012);
+    float gx = lmLine(abs(fract(uv.x / 0.034) - 0.5) * 0.034, 0.004, px);
     lmS.alb *= mix(0.55, mix(0.25, 1.0, gx), fade);
-    lmS.h += gx * 0.006 * fade;
   } else if (pat < 10.5) {
     // LAMP
     float blink = lmBit(fl, 8.0) > 0.5 ? step(fract(lmTime * 0.75), 0.4) : 1.0;
     float day = lmBit(fl, 16.0);
-    lmS.emis = baseCol * blink * (lmNight * 14.0 + day * (1.0 - lmNight) * 6.0);
+    lmS.emis = baseCol * blink * (lmNight * 3.0 + day * (1.0 - lmNight) * 6.0);
     lmS.alb = vec3(0.6);
     grime = 0.0;
   } else if (pat < 11.5) {
     // ROOFSEAM: standing seams every 0.55 m along u
     float s = abs(fract(uv.x / 0.55) - 0.5) * 0.55;
-    float seam = 1.0 - smoothstep(0.006, 0.018, s);
-    float fade = 1.0 - smoothstep(0.03, 0.1, px);
-    lmS.h += seam * 0.025 * fade;
-    lmS.alb *= 1.0 + seam * 0.08 * fade;
+    float seam = lmLine(s, 0.012, px);
+    lmS.h += seam * 0.025 * lmBumpOk(0.024, px);
+    lmS.alb *= 1.0 + seam * 0.08;
   } else if (pat < 12.5) {
     // TILES / slabs 0.6 m
     vec2 g = uv / 0.6; vec2 f = fract(g);
-    float gr = 1.0 - smoothstep(0.004, 0.01, min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)) * 0.6);
-    float fade = 1.0 - smoothstep(0.02, 0.06, px);
-    lmS.alb *= (1.0 + (lmHash(floor(g)) - 0.5) * 0.12) * (1.0 - gr * 0.3 * fade);
-    lmS.h += -gr * 0.003 * fade;
+    float gr = lmLine(min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)) * 0.6, 0.005, px);
+    lmS.alb *= (1.0 + (lmHash(floor(g)) - 0.5) * 0.12) * (1.0 - gr * 0.3);
+    lmS.h += -gr * 0.003 * lmBumpOk(0.01, px);
   } else if (pat < 13.5) {
     // WINDOW pane (single window geometry): dark glass, lit at night
     float hp = lmHash(floor(p.xz * 0.5) + floor(p.y * 0.3));
     lmS.over = vec3(0.03, 0.04, 0.05); lmS.overA = 1.0;
     lmS.rough = 0.06; lmS.metal = 0.0;
-    lmS.emis = vec3(1.0, 0.78, 0.48) * lmNight * lmBit(fl, 4.0) * (0.6 + hp * 0.8) * 1.4;
+    lmS.emis = vec3(1.0, 0.78, 0.48) * lmNight * lmBit(fl, 4.0) * (0.6 + hp * 0.8) * 0.2;
     grime = 0.0;
   } else if (pat < 14.5) {
     // GRANITE (polished)
@@ -231,8 +238,10 @@ void lmSurface(vec3 baseCol) {
 
   // night floodlighting (warm, from ground projectors)
   if (lmBit(fl, 1.0) > 0.5) {
-    float fall = 0.3 + 0.7 * exp(-max(p.y, 0.0) / 24.0);
-    lmS.emis += baseCol * lmS.alb * lmFlood * lmNight * fall * 0.55;
+    // projectors at the foot of the walls: strongest low down and on vertical faces
+    float fall = 0.35 + 0.65 * exp(-max(p.y, 0.0) / 22.0);
+    float facing = mix(0.35, 1.0, vert);
+    lmS.emis += baseCol * lmS.alb * lmFlood * lmNight * fall * facing * 0.11;
   }
 }
 

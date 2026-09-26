@@ -33,7 +33,15 @@ import time
 import numpy as np
 import rasterio
 import requests
-from numba import njit
+try:
+    from numba import njit                 # pip install numba (makes the RTIN step ~100x faster)
+except ImportError:                          # pragma: no cover - slow pure-Python fallback
+    print("[far] numba not installed: RTIN meshing runs in pure Python (several minutes)")
+
+    def njit(*a, **k):
+        if a and callable(a[0]):
+            return a[0]
+        return lambda f: f
 from PIL import Image
 from rasterio.warp import reproject, Resampling
 from rasterio.windows import from_bounds

@@ -5,7 +5,7 @@
 // and water. Colour is matched to the Sentinel-2 ortho the terrain uses.
 import * as THREE from 'three';
 import type { AppContext } from '../../core/context';
-import { GLSL_COMMON, VU, protectOnBeforeCompile } from './materials';
+import { GLSL_COMMON, LEAF_SPECULAR, VU, protectOnBeforeCompile } from './materials';
 import { pointInRing } from './data';
 
 export interface GrassRing { spacing: number; rIn: number; rOut: number; blades: number; segs: number; width: number; density: number }
@@ -14,19 +14,19 @@ export function grassRings(q: string): GrassRing[] {
   switch (q) {
     case 'low': return [];
     case 'medium': return [
-      { spacing: 0.2, rIn: 0, rOut: 11, blades: 3, segs: 3, width: 1.0, density: 1 },
+      { spacing: 0.2, rIn: 0, rOut: 11, blades: 4, segs: 3, width: 1.0, density: 1 },
       { spacing: 0.45, rIn: 11, rOut: 30, blades: 2, segs: 2, width: 1.6, density: 1 },
       { spacing: 1.1, rIn: 30, rOut: 70, blades: 1, segs: 1, width: 3.2, density: 0.9 },
     ];
     case 'ultra': return [
-      { spacing: 0.13, rIn: 0, rOut: 16, blades: 3, segs: 4, width: 1.0, density: 1 },
+      { spacing: 0.13, rIn: 0, rOut: 16, blades: 5, segs: 4, width: 1.0, density: 1 },
       { spacing: 0.3, rIn: 16, rOut: 40, blades: 3, segs: 3, width: 1.4, density: 1 },
       { spacing: 0.7, rIn: 40, rOut: 95, blades: 2, segs: 2, width: 2.4, density: 1 },
       { spacing: 1.5, rIn: 95, rOut: 170, blades: 1, segs: 1, width: 4.0, density: 0.9 },
     ];
     case 'high':
     default: return [
-      { spacing: 0.16, rIn: 0, rOut: 13, blades: 3, segs: 4, width: 1.0, density: 1 },
+      { spacing: 0.16, rIn: 0, rOut: 13, blades: 5, segs: 3, width: 1.0, density: 1 },
       { spacing: 0.36, rIn: 13, rOut: 34, blades: 3, segs: 3, width: 1.5, density: 1 },
       { spacing: 0.85, rIn: 34, rOut: 80, blades: 2, segs: 2, width: 2.6, density: 1 },
       { spacing: 1.8, rIn: 80, rOut: 140, blades: 1, segs: 1, width: 4.2, density: 0.85 },
@@ -71,6 +71,9 @@ uniform vec4 uGRing2;       // width scale, density mul, segs, band
 uniform vec4 uGHF;          // half, res, n
 varying vec3 vGCol;
 varying vec2 vGT;           // t along blade, flower flag
+#ifdef GRASS_TERRAIN_HF
+float gHeight(vec2 p) { vec2 gr; return tHeightBicubic(p, gr) + 0.015; }
+#else
 float gHeight(vec2 p) {
   vec2 g = (p + uGHF.x) / uGHF.y;
   g = clamp(g, vec2(0.0), vec2(uGHF.z - 1.001));
@@ -79,6 +82,7 @@ float gHeight(vec2 p) {
   float c = texelFetch(uGHeight, i + ivec2(0, 1), 0).r, d = texelFetch(uGHeight, i + ivec2(1, 1), 0).r;
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
+#endif
 `;
 
 const GRASS_VERT_MAIN = /* glsl */ `
@@ -103,14 +107,14 @@ vGCol = vec3(0.0); vGT = vec2(0.0);
   float type = floor(texture2D(uGType, cuv).r * 255.0 + 0.5);
   vec2 nuv = (p - uGNoGrowRect.xy) / uGNoGrowRect.z;
   float ng = (nuv.x < 0.0 || nuv.y < 0.0 || nuv.x > 1.0 || nuv.y > 1.0) ? 0.0 : texture2D(uGNoGrow, nuv).r;
-  float dens = cov.r * (1.0 - smoothstep(0.2, 0.55, ng)) * uGRing2.y;
+  float dens = pow(cov.r, 0.65) * (1.0 - smoothstep(0.2, 0.55, ng)) * uGRing2.y;
   float band = uGRing2.w;
   float fade = (uGRing.z > 0.0 ? smoothstep(uGRing.z - band, uGRing.z + band * 0.2, dist) : 1.0) * (1.0 - smoothstep(uGRing.w - band, uGRing.w, dist));
   if (hk < dens && fade > 0.02) {
     // blade parameters by cover type
     float hB = 0.18, wB = 0.010, lean = 0.35, stiff = 1.0;
-    if (type < 0.5) { hB = 0.17; wB = 0.011; lean = 0.4; }
-    else if (type < 1.5) { hB = 0.42; wB = 0.009; lean = 0.45; }
+    if (type < 0.5) { hB = 0.2; wB = 0.022; lean = 0.5; }
+    else if (type < 1.5) { hB = 0.42; wB = 0.015; lean = 0.45; }
     else if (type < 2.5) { hB = 1.75; wB = 0.02; lean = 0.18; stiff = 0.6; }
     else if (type < 3.5) { hB = 0.82; wB = 0.011; lean = 0.07; stiff = 0.8; }
     else if (type < 4.5) { hB = 1.55; wB = 0.06; lean = 0.25; stiff = 0.5; }
@@ -181,6 +185,8 @@ export class Grass {
     this.rings = grassRings(quality);
     const hf = ctx.heightfield;
     const hfTex = hf.texture;
+    // match the terrain's rendered (bicubic) surface when the terrain module exposes its GLSL
+    const terrainGlsl: string | undefined = ctx.get<any>('terrain')?.glsl?.heightfield;
     for (const ring of this.rings) {
       this.maxR = Math.max(this.maxR, ring.rOut);
       const N = Math.ceil((2 * ring.rOut) / ring.spacing) + 2;
@@ -203,8 +209,12 @@ export class Grass {
         shader.uniforms.uGRing2 = uRing2;
         shader.uniforms.uGHF = { value: new THREE.Vector4(hf.half, hf.res, hf.n, 0) };
         shader.uniforms.uTransl = { value: 0.35 };
+        if (terrainGlsl) {
+          shader.uniforms.uHeight = { value: hfTex };
+          shader.uniforms.uHf = { value: new THREE.Vector3(hf.n, hf.half, hf.res) };
+        }
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${GRASS_VERT_PARS}`)
+          .replace('#include <common>', `#include <common>\n${terrainGlsl ? `#define GRASS_TERRAIN_HF\n${terrainGlsl}\n` : ''}${GRASS_VERT_PARS}`)
           .replace('#include <beginnormal_vertex>', GRASS_VERT_MAIN)
           .replace('#include <begin_vertex>', 'vec3 transformed = grassPos;');
         shader.fragmentShader = shader.fragmentShader
@@ -228,8 +238,9 @@ void RE_Direct_Grass( const in IncidentLight directLight, const in vec3 geometry
 }
 #undef RE_Direct
 #define RE_Direct RE_Direct_Grass`)
-          .replace('float faceDirection = gl_FrontFacing ? 1.0 : - 1.0;', 'float faceDirection = 1.0;');
-      }, `grass`);
+          .replace('float faceDirection = gl_FrontFacing ? 1.0 : - 1.0;', 'float faceDirection = 1.0;')
+          .replace('#include <lights_physical_fragment>', LEAF_SPECULAR);
+      }, terrainGlsl ? 'grass-thf' : 'grass');
       ctx.registerMaterial(mat);
       const m = new THREE.Mesh(g, mat);
       m.frustumCulled = false;

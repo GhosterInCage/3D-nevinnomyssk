@@ -1,6 +1,7 @@
 """Procedural textures for the buildings module (CC0, generated here).
 
-public/textures/buildings/noise.png  512x512 RGBA, seamlessly tileable
+public/textures/buildings/noise.bin  512x512 RGBA8 raw (row 0 = top), seamlessly tileable
+  (raw instead of PNG: decoded in a worker without canvas premultiplication, 1 MiB)
   R: low-frequency fBm (large stains, colour variation)
   G: mid-frequency fBm (plaster / render unevenness)
   B: high-frequency grain (concrete / brick surface)
@@ -49,8 +50,11 @@ def main():
     M = fbm_periodic(n, 1.5, 5, lo=1.0)
     A = S * 0.7 + np.clip(M, 0, None) * S * 0.6
     img = np.stack([to_u8(R), to_u8(G), to_u8(B, 0.2), to_u8(A / (A.std() + 1e-9))], -1)
-    Image.fromarray(img, "RGBA").save(os.path.join(OUT, "noise.png"), optimize=True)
-    print("noise.png", os.path.getsize(os.path.join(OUT, "noise.png")))
+    img.astype(np.uint8).tofile(os.path.join(OUT, "noise.bin"))
+    old = os.path.join(OUT, "noise.png")
+    if os.path.exists(old):
+        os.remove(old)
+    print("noise.bin", os.path.getsize(os.path.join(OUT, "noise.bin")))
 
 
 if __name__ == "__main__":

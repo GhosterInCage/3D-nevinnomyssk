@@ -25,7 +25,7 @@ float skpCloudShadow(const vec3 pW) {
   float t = (alt - pW.y) / max(skSunDirW.y, 0.05);
   vec2 q = pW.xz + skSunDirW.xz * t;
   vec2 uv = (q + skCloudP0.zw) * skCloudP0.y;
-  float r = texture2D(skCloudTex, uv).r;
+  float r = texture(skCloudTex, uv, 1.0).r;
   float large = texture2D(skCloudTex, SKP_ROT * uv * 0.37 + 0.21).a;
   float cov = clamp(skCloudP0.x + (large - 0.5) * skCloudP1.w * (1.0 - skCloudP0.x) * 2.0, 0.0, 1.0);
   float d = clamp((r - (1.0 - cov * 1.35)) / 0.35, 0.0, 1.0);

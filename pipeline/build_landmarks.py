@@ -43,6 +43,10 @@ from config import RAW, PROC, WEB_DATA, REGION_HALF, to_local
 
 OUT_DIR = os.path.join(WEB_DATA, "landmarks")
 os.makedirs(OUT_DIR, exist_ok=True)
+# procedural texture used by the runtime material (generated once, committed)
+if not os.path.exists(os.path.join(os.path.dirname(WEB_DATA), "textures", "landmarks", "noise.png")):
+    import landmarks_textures
+    landmarks_textures.main()
 T0 = time.time()
 tr = to_local()
 
@@ -112,6 +116,15 @@ def bld_by_id(prefix):
         if b["id"].startswith(prefix):
             return b
     raise KeyError(prefix)
+
+
+def optional(fn, what):
+    """Run a builder; a missing footprint (Overture re-release) drops that landmark instead of failing."""
+    try:
+        return fn()
+    except KeyError as e:
+        log(f"  {what}: footprint {e} not found - skipped")
+        return None
 
 
 def blds_in(poly, pred=None):
@@ -250,6 +263,9 @@ log("  tanks", len(gres["tanks"]))
 # ============================================================================ AZOT
 log("Azot")
 az_poly = LU["Невинномысский Азот"]
+# process core of the plant (dense process units, racks); the south and south-east of the land-use
+# polygon are warehouses, workshops and other enterprises
+az_core = az_poly.intersection(shapely.box(-450, -3650, 1480, -1440))
 azot = dict(stacks=[], prill=[], columns=[], ammonia=[], tanks=[], cells=[], racks=[], hide=[])
 # tall structures from the shadow scan of the plant (see header); heights refined here
 TALL = [
@@ -299,7 +315,7 @@ Tr = affine.Affine(10, 0, -10240 + i0 * 10, 0, 10, -10240 + j0 * 10)
 shape = (j1 - j0, i1 - i0)
 near = [b["g"] for b in blds_in(az_poly.buffer(50))]
 bmask = rasterio.features.rasterize([(g.buffer(5), 1) for g in near], out_shape=shape, transform=Tr)
-inside = rasterio.features.rasterize([(az_poly.buffer(-15), 1)], out_shape=shape, transform=Tr)
+inside = rasterio.features.rasterize([(az_core.buffer(-15), 1)], out_shape=shape, transform=Tr)
 ex = EXC[j0:j1, i0:i1]
 nd = NDVI[j0:j1, i0:i1]
 cand = (ex > 4.0) & (nd < 0.32) & (bmask == 0) & (inside == 1)
@@ -322,7 +338,7 @@ for r in SEG:
     if r["subtype"] != "road":
         continue
     g = W(shapely.from_wkb(r["geometry"]))
-    gi = g.intersection(az_poly.buffer(-20))
+    gi = g.intersection(az_core.buffer(-20))
     if gi.is_empty:
         continue
     for part in (gi.geoms if hasattr(gi, "geoms") else [gi]):
@@ -336,7 +352,7 @@ for r in SEG:
             for seg in (free.geoms if hasattr(free, "geoms") else [free]):
                 if seg.geom_type != "LineString" or seg.length < 40:
                     continue
-                s = seg.simplify(1.0)
+                s = seg.simplify(2.5)
                 racks.append([round(v, 1) for xy in s.coords for v in xy])
             break   # one side per road
 azot["racks"] = racks
@@ -363,14 +379,14 @@ def church(prefix, **kw):
 
 # Pokrovsky cathedral (1988-1998): white-stone five-domed chetverik with risalits, octagonal
 # four-tier bell tower 50 m over the west part, main dome 34 m; gilded domes.
-church("d3be91ae", name="Кафедральный собор Покрова Пресвятой Богородицы", kind="cathedral",
-       domes=5, dome="gold", walls="white", bell=50.0, h=34.0)
+optional(lambda: church("d3be91ae", name="Кафедральный собор Покрова Пресвятой Богородицы", kind="cathedral",
+                        domes=5, dome="gold", walls="white", bell=50.0, h=34.0), "cathedral")
 # St Seraphim of Sarov (2005-2015, Old Russian style, brick): five drums (Overture building parts:
 # central drum 18 m, four 14 m) + west belfry drum.
-church("6702d4d6", name="Храм Преподобного Серафима Саровского", kind="church5",
-       domes=5, dome="gold", walls="brick", bell=26.0, h=27.0)
-church("42431ea8", name="Крестильный храм / часовня (Серафимовский приход)", kind="chapel",
-       domes=1, dome="gold", walls="brick", bell=0, h=13.0)
+optional(lambda: church("6702d4d6", name="Храм Преподобного Серафима Саровского", kind="church5",
+                        domes=5, dome="gold", walls="brick", bell=26.0, h=27.0), "St Seraphim")
+optional(lambda: church("42431ea8", name="Крестильный храм / часовня (Серафимовский приход)", kind="chapel",
+                        domes=1, dome="gold", walls="brick", bell=0, h=13.0), "chapel")
 # other churches / chapels mapped in OSM (names unknown in the data)
 for pref, kw in (("4ddbab1e", dict(kind="church1", domes=1, dome="blue", walls="white", bell=18.0, h=17.0)),
                  ("60d882f5", dict(kind="chapel", domes=1, dome="gold", walls="white", bell=0, h=11.0)),
@@ -386,23 +402,33 @@ log("  ", [(c["name"][:30], c["x"], c["z"], c["len"], c["wid"]) for c in churche
 # Eternal Flame + obelisk "Вечная слава" (1967) on bulvar Mira at Gagarina street; the boulevard axis
 # here runs at heading ~75 deg (from its Overture centre line).
 mem = dict(x=182.0, z=64.0, rot=round(math.atan2(0.27, 1.0), 4), obeliskH=17.0)
-st = bld_by_id("db8b04f5")
-station = mrr(st["g"])
-station.update(ring=ring_of(st["g"]), hide=[st["id"]], name="Вокзал станции Невинномысская")
-# entrance faces the town (south, away from the tracks at z ~ 1014-1029)
-station["front"] = 1 if math.cos(station["rot"]) * 1 >= 0 else -1
-stand = bld_by_id("4ffa8295")
-sm = mrr(stand["g"])
-stadium = dict(x=-687.0, z=296.0, rot=round(math.radians(80) * -1 + 0, 4), stand=sm, hide=[stand["id"]],
-               name="Стадион «Химик» (НГГТИ)")
-# pitch axis: stadium land-use polygon long axis
-sp = LU.get("Стадион НГГТИ")
-if sp is not None:
-    m = mrr(sp)
-    stadium.update(x=m["x"], z=m["z"], rot=m["rot"], len=m["len"], wid=m["wid"])
+def _station():
+    st = bld_by_id("db8b04f5")
+    station = mrr(st["g"])
+    station.update(ring=ring_of(st["g"]), hide=[st["id"]], name="Вокзал станции Невинномысская")
+    # entrance faces the town (south, away from the tracks at z ~ 1014-1029): front = sign of local +Z . south
+    station["front"] = 1 if math.cos(station["rot"]) >= 0 else -1
+    return station
+
+
+def _stadium():
+    stand = bld_by_id("4ffa8295")
+    sm = mrr(stand["g"])
+    stadium = dict(x=-687.0, z=296.0, rot=round(-math.radians(80), 4), stand=sm, hide=[stand["id"]],
+                   name="Стадион «Химик» (НГГТИ)")
+    # pitch axis: stadium land-use polygon long axis
+    sp = LU.get("Стадион НГГТИ")
+    if sp is not None:
+        m = mrr(sp)
+        stadium.update(x=m["x"], z=m["z"], rot=m["rot"], len=m["len"], wid=m["wid"])
+    return stadium
+
+
+station = optional(_station, "station")
+stadium = optional(_stadium, "stadium")
 
 # ============================================================================ turbines / masts / signs
-turbines, masts, signs = [], [], []
+turbines, masts, signs, fountains = [], [], [], []
 for r in INFRA:
     st_ = r.get("source_tags") or {}
     g = W(shapely.from_wkb(r["geometry"]))
@@ -414,10 +440,12 @@ for r in INFRA:
     elif r["class"] == "mobile_phone_tower":
         h = r.get("height") or 0
         masts.append([round(c.x, 1), round(c.y, 1), float(h) if h else 0.0])
+    elif r["class"] == "fountain" and abs(c.x) < REGION_HALF and abs(c.y) < REGION_HALF:
+        fountains.append([round(c.x, 1), round(c.y, 1)])
     elif r["class"] == "artwork" and (r["names"] or {}).get("primary") in ("ГРЭС", "Еврохим"):
         signs.append(dict(text=(r["names"] or {}).get("primary"), x=round(c.x, 1), z=round(c.y, 1)))
 # Kochubeevskaya wind farm: 84 x 2.5 MW NovaWind (Lagerwey L100 design), hub height 100 m (OSM), rotor 100 m
-log("turbines", len(turbines), "masts", len(masts), "signs", signs)
+log("turbines", len(turbines), "masts", len(masts), "signs", signs, "fountains", fountains)
 # orient the signs towards the nearest road
 for s in signs:
     best = None
@@ -431,7 +459,8 @@ for s in signs:
             best = (d, g)
     if best:
         q = best[1].interpolate(best[1].project(p))
-        s["rot"] = round(math.atan2(-(q.y - s["z"]), q.x - s["x"]) - math.pi / 2, 4)
+        # plane normal (local +Z -> (sin rot, cos rot)) faces the road
+        s["rot"] = round(math.atan2(q.x - s["x"], q.y - s["z"]), 4)
     else:
         s["rot"] = 0.0
 
@@ -461,12 +490,28 @@ except Exception as e:  # noqa
 log("weir", weir)
 
 # ============================================================================ Kubanskaya GES-4
-ges = bld_by_id("ee20efc9")
-ges4 = mrr(ges["g"])
-ges4.update(ring=ring_of(ges["g"]), hide=[ges["id"]], name="Кубанская ГЭС-4")
+def _ges4():
+    ges = bld_by_id("ee20efc9")
+    g4 = mrr(ges["g"])
+    g4.update(ring=ring_of(ges["g"]), hide=[ges["id"]], name="Кубанская ГЭС-4")
+    return g4
+
+
+ges4 = optional(_ges4, "GES-4")
+
+# ============================================================================ Ice Palace "Olimpiysky" (2013)
+def _arena():
+    ice = bld_by_id("26334040")
+    a = mrr(ice["g"])
+    a.update(ring=ring_of(ice["g"]), hide=[ice["id"]], name="Ледовый дворец «Олимпийский»")
+    return a
+
+
+arena = optional(_arena, "ice arena")
 
 out = dict(version=1, generated=time.strftime("%Y-%m-%d"), gres=gres, azot=azot, churches=churches, memorial=mem,
-           station=station, stadium=stadium, turbines=turbines, masts=masts, signs=signs, weir=weir, ges4=ges4)
+           station=station, stadium=stadium, turbines=turbines, masts=masts, signs=signs, fountains=fountains,
+           weir=weir, ges4=ges4, arena=arena)
 p = os.path.join(OUT_DIR, "landmarks.json")
 with open(p, "w") as f:
     json.dump(out, f, ensure_ascii=False, separators=(",", ":"))

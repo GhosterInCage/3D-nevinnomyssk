@@ -54,6 +54,8 @@ vec3 bLin(vec3 c) { return c * c * (c * 0.3 + 0.7); } // cheap sRGB -> linear
 float bBox(float x, float a, float b, float w) { return smoothstep(a - w, a + w, x) - smoothstep(b - w, b + w, x); }
 float bRect(vec2 p, vec2 lo, vec2 hi, float w) { return bBox(p.x, lo.x, hi.x, w) * bBox(p.y, lo.y, hi.y, w); }
 vec4 bNoise(vec2 uv) { return texture2D(uNoise, uv); }
+// explicit-LOD lookup (safe inside branches); f = texture uv units per metre, px = metres per pixel
+vec4 bNoiseL(vec2 uv, float f, float px) { return textureLod(uNoise, uv, max(0.0, log2(max(px * f * 512.0, 1e-6)))); }
 float bFlag(float flags, float bit) { return mod(floor(flags / bit), 2.0); }
 
 // ------------------------------------------------------------ fake environment reflection (when no env map)
@@ -96,10 +98,11 @@ vec3 bInterior(vec3 o, vec3 d, float w, float h, float depth, float rnd, float l
   }
   // light: daylight falls off with depth; artificial light from the ceiling
   float dayL = uDay * (0.018 + 0.05 * exp(-dist * 0.5));
-  vec3 lampC = mix(vec3(1.0, 0.72, 0.42), vec3(0.95, 0.93, 0.88), step(0.7, bh11(rnd * 8.8)));
+  float lk = bh11(rnd * 8.8);
+  vec3 lampC = lk < 0.55 ? vec3(1.0, 0.66, 0.34) : lk < 0.8 ? vec3(1.0, 0.8, 0.55) : vec3(0.9, 0.92, 0.95);
   if (bh11(rnd * 6.6) > 0.93) lampC = vec3(0.55, 0.65, 1.0); // TV glow
   float lamp = lit * (0.55 + 0.45 * smoothstep(h, 0.0, length(p - vec3(w * 0.5, h, -depth * 0.5)) * 0.6));
-  return col * (dayL + lamp * lampC * 0.55);
+  return col * (dayL + lamp * lampC * 0.2);
 }
 
 // ------------------------------------------------------------ one window (opening + recessed glass)
@@ -169,12 +172,13 @@ float bWindow(vec2 f, vec4 win, vec3 Vt, vec3 room, float rid, float px, float f
   float dist;
   vec3 inter;
   if (uDetail > 0.5 && px < 0.08) inter = bInterior(o, dir, room.x, room.y, 4.5, rid, lit, dist);
-  else inter = vec3(0.35, 0.3, 0.25) * (uDay * 0.06 + lit * 0.45);
-  vec3 lampC = mix(vec3(1.0, 0.72, 0.42), vec3(0.95, 0.93, 0.88), step(0.7, bh11(rid * 8.8)));
+  else inter = vec3(0.35, 0.3, 0.25) * (uDay * 0.06 + lit * 0.18);
+  float lk = bh11(rid * 8.8);
+  vec3 lampC = lk < 0.55 ? vec3(1.0, 0.66, 0.34) : lk < 0.8 ? vec3(1.0, 0.8, 0.55) : vec3(0.9, 0.92, 0.95);
   // tulle diffuses daylight / lamp light
-  vec3 tulleCol = vec3(0.85, 0.84, 0.80) * (uDay * 0.07 + lit * lampC * 0.5);
+  vec3 tulleCol = vec3(0.85, 0.84, 0.80) * (uDay * 0.07 + lit * lampC * 0.2);
   inter = mix(inter, tulleCol, tulle);
-  vec3 curt = curtainCol * (uDay * 0.06 + lit * lampC * 0.35);
+  vec3 curt = curtainCol * (uDay * 0.06 + lit * lampC * 0.14);
   inter = mix(inter, curt, clamp(curtain, 0.0, 1.0));
   // glass: dark, glossy, slightly tilted per pane (varied reflections)
   vec2 tilt = (bh22(vec2(rid, rid * 1.3)) - 0.5) * 0.06;
@@ -223,8 +227,8 @@ void bSurface() {
     vec3 alb = base;
     float rough = 0.85, metal = 0.0, ao = 1.0;
     vec3 emis = vec3(0.0);
-    vec4 nz = bNoise(p * vec2(0.013, 0.013) + seed * 0.37);
-    vec4 nf = bNoise(p * 0.21 + seed * 0.11);
+    vec4 nz = bNoiseL(p * 0.013 + seed * 0.37, 0.013, px);
+    vec4 nf = px < 0.06 ? bNoiseL(p * 0.21 + seed * 0.11, 0.21, px) : vec4(0.5);
 
     if (kind > 5.5) {
       // --------------------------------------------------------- balcony glazing panel
@@ -266,7 +270,13 @@ void bSurface() {
     if (style == 7.0 && bh11(seed) > 0.5) isBrick = 1.0;
     float isPanel = (style == 3.0 || style == 5.0) ? 1.0 : 0.0;
     float farT = smoothstep(0.015, 0.05, px);
-    if (isBrick > 0.5) {
+    if (farT > 0.999) {
+      // distant: pattern averages only (cheap path)
+      if (isBrick > 0.5) alb = mix(base, vec3(0.55, 0.53, 0.50), 0.16);
+      else if (style == 9.0 || style == 11.0) { alb = base * 0.95; rough = 0.55; metal = 0.25; }
+      else if (style == 8.0) { alb = base * 0.93; rough = 0.5; metal = 0.2; }
+      else alb = base * 0.97;
+    } else if (isBrick > 0.5) {
       vec2 bs = vec2(0.26, 0.077);
       float row = floor(p.y / bs.y);
       float xx = p.x / bs.x + 0.5 * mod(row, 2.0);
@@ -401,7 +411,7 @@ void bSurface() {
       vec3 winAvg = vec3(0.035, 0.04, 0.05);
       alb = mix(alb, winAvg, cover * 0.9);
       rough = mix(rough, 0.3, cover);
-      emis += vec3(1.0, 0.75, 0.45) * lit * cover * 0.45;
+      emis += vec3(1.0, 0.7, 0.4) * lit * cover * 0.16;
     } else if (inGrid) {
       vec3 Vtl = Vt;
       bool door = false;
@@ -430,13 +440,36 @@ void bSurface() {
         float dw = houseDoor ? 0.95 : 1.3;
         vec4 dr = vec4((cellW - dw) * 0.5, 0.0, (cellW + dw) * 0.5, houseDoor ? 2.05 : 2.15);
         float inD = bRect(f, dr.xy, dr.zw, px);
-        vec3 dc = mix(vec3(0.18, 0.16, 0.15), vec3(0.32, 0.24, 0.16), step(0.5, bh11(seed + col)));
+        float dk = bh11(seed + col * 1.7);
+        vec3 dc = dk < 0.4 ? vec3(0.18, 0.16, 0.15) : dk < 0.7 ? vec3(0.32, 0.22, 0.14) : dk < 0.85 ? vec3(0.45, 0.2, 0.12) : vec3(0.2, 0.28, 0.2);
         float frame = 1.0 - bRect(f, dr.xy + 0.06, dr.zw - 0.06, px);
-        alb = mix(alb, mix(dc, dc * 0.7, frame), inD);
+        // two recessed panels + handle
+        vec2 dl = f - dr.xy;
+        float dW = dr.z - dr.x, dH = dr.w - dr.y;
+        float pan = bRect(dl, vec2(0.14, 0.18), vec2(dW - 0.14, dH * 0.45), px) + bRect(dl, vec2(0.14, dH * 0.52), vec2(dW - 0.14, dH - 0.16), px);
+        float handle = bRect(dl, vec2(dW - 0.2, dH * 0.46), vec2(dW - 0.12, dH * 0.5), px);
+        vec3 dcol = mix(dc, dc * 0.7, frame);
+        dcol = mix(dcol, dc * 0.85, clamp(pan, 0.0, 1.0));
+        dcol = mix(dcol, vec3(0.7, 0.68, 0.6), handle);
+        alb = mix(alb, dcol, inD);
+        nT = mix(nT, normalize(vec3(0.0, 0.25, 1.0)), clamp(pan, 0.0, 1.0) * inD * 0.5);
         rough = mix(rough, 0.45, inD); metal = mix(metal, 0.5, inD);
         // lamp glow pool on the wall above the door at night
         float gl = exp(-length((f - vec2(cellW * 0.5, 2.8)) * vec2(1.2, 1.6)) * 1.5);
         emis += vec3(1.0, 0.78, 0.5) * gl * uNight * 0.18;
+      } else if (px > 0.06) {
+        // mid distance: flat window rectangles (no parallax / interior / frames)
+        float inW = bRect(f, win.xy, win.zw, px);
+        float lit = step(bLitId, uLitFrac) * uNight;
+        float lk = bh11(rid * 8.8);
+        vec3 lampC = lk < 0.55 ? vec3(1.0, 0.66, 0.34) : lk < 0.8 ? vec3(1.0, 0.8, 0.55) : vec3(0.9, 0.92, 0.95);
+        vec3 frameAvg = frameType < 0.62 ? vec3(0.86) : frameType < 0.78 ? vec3(0.28, 0.16, 0.09) : vec3(0.6);
+        alb = mix(alb, mix(vec3(0.02), frameAvg, 0.18), inW);
+        rough = mix(rough, 0.12, inW);
+        metal = mix(metal, 0.0, inW);
+        emis += (vec3(0.3, 0.27, 0.22) * uDay * 0.05 + lampC * lit * 0.16) * inW;
+        bGlass = inW * 0.8;
+        nT = mix(nT, normalize(vec3((bh22(vec2(rid, rid * 1.3)) - 0.5) * 0.06, 1.0)), inW);
       } else {
         bWindow(f, win, Vtl, room, rid, px, frameType, sashes, transom, wallCol, alb, rough, metal, nT, emis, ao);
       }
@@ -462,9 +495,11 @@ void bSurface() {
         }
       }
       // dirt streaks below the window
-      float below = step(f.y, win.y) * bBox(f.x, win.x, win.z, 0.1) * smoothstep(win.y - 2.0, win.y, f.y);
-      float streak = bNoise(vec2(p.x * 0.6, p.y * 0.05) + seed).a;
-      alb *= 1.0 - 0.18 * below * smoothstep(0.45, 0.8, streak) * (1.0 - farT);
+      if (px < 0.06) {
+        float below = step(f.y, win.y) * bBox(f.x, win.x, win.z, 0.1) * smoothstep(win.y - 2.0, win.y, f.y);
+        float streak = bNoiseL(vec2(p.x * 0.6, p.y * 0.05) + seed, 0.6, px).a;
+        alb *= 1.0 - 0.18 * below * smoothstep(0.45, 0.8, streak) * (1.0 - farT);
+      }
     }
     // faux loggias beyond the detail radius (real geometry is used up close)
     float typC = floor(vC.a * 255.0 + 0.5);
@@ -521,8 +556,10 @@ void bSurface() {
       }
     }
     // ground-contact dirt + rain streaks from the roof edge
-    float streakTop = bNoise(vec2(p.x * 0.3, p.y * 0.02) + seed * 0.3).a;
-    alb *= 1.0 - 0.12 * smoothstep(0.6, 0.9, streakTop) * smoothstep(wallTopV - 6.0, wallTopV, p.y);
+    if (px < 0.15) {
+      float streakTop = bNoiseL(vec2(p.x * 0.3, p.y * 0.02) + seed * 0.3, 0.3, px).a;
+      alb *= 1.0 - 0.12 * smoothstep(0.6, 0.9, streakTop) * smoothstep(wallTopV - 6.0, wallTopV, p.y);
+    }
     alb *= mix(0.8, 1.0, smoothstep(-1.0, 0.8, p.y));
     if (isHole) alb *= 0.95;
 
@@ -547,8 +584,8 @@ void bSurface() {
     vec3 e = normalize(vec3(-N.z, 0.0, N.x) + 1e-5);
     vec3 s = normalize(cross(N, e));
     vec2 q = p; // x along the eave, y up the slope (m)
-    vec4 nf = bNoise(q * 0.08 + seed * 0.13);
-    vec4 nl = bNoise(q * 0.015 + seed * 0.07);
+    vec4 nf = bNoiseL(q * 0.08 + seed * 0.13, 0.08, px);
+    vec4 nl = bNoiseL(q * 0.015 + seed * 0.07, 0.015, px);
     float farT = smoothstep(0.02, 0.08, px);
     vec3 alb = base;
     float rough = 0.6, metal = 0.0;
@@ -604,9 +641,19 @@ void bSurface() {
       alb = base * (0.9 + 0.15 * nf.g);
       rough = 0.7;
     }
+    // ridge / hip cap along the top of the slope
+    float slopeLen = vW.x * 0.01;
+    if (slopeLen > 0.5 && style != 6.0) {
+      float cap = smoothstep(slopeLen - 0.2 - px, slopeLen - 0.2 + px, q.y);
+      alb = mix(alb, base * 0.8, cap);
+      nt = mix(nt, vec3(0.0, 0.6, 1.0), cap * (1.0 - farT));
+      rough = mix(rough, 0.6, cap);
+    }
     // weathering: darker near the eave, dirt streaks down the slope
-    float streak = bNoise(vec2(q.x * 0.35, q.y * 0.03) + seed).a;
-    alb *= 1.0 - 0.12 * smoothstep(0.55, 0.85, streak);
+    if (px < 0.1) {
+      float streak = bNoiseL(vec2(q.x * 0.35, q.y * 0.03) + seed, 0.35, px).a;
+      alb *= 1.0 - 0.12 * smoothstep(0.55, 0.85, streak);
+    }
     alb *= 0.92 + 0.12 * nl.g;
     bAlbedo = alb; bRough = rough; bMetal = metal;
     bN = normalize(e * nt.x + s * nt.y + N * nt.z);
@@ -616,8 +663,8 @@ void bSurface() {
   if (kind < 2.5) {
     // ===================================================================== FLAT ROOFS
     vec2 q = vWPos.xz;
-    vec4 nf = bNoise(q * 0.07 + seed * 0.1);
-    vec4 nl = bNoise(q * 0.012);
+    vec4 nf = bNoiseL(q * 0.07 + seed * 0.1, 0.07, px);
+    vec4 nl = bNoiseL(q * 0.012, 0.012, px);
     vec3 alb = base;
     // repair patches (rolled roofing strips) on a 1 m x ~8 m grid
     vec2 cell = floor(vec2(q.x / 1.0, q.y / 8.0));
@@ -626,7 +673,7 @@ void bSurface() {
     alb *= 0.85 + 0.25 * nf.g;
     // puddle stains / dust
     alb = mix(alb, alb * 0.7, smoothstep(0.65, 0.85, nl.r));
-    alb = mix(alb, vec3(0.45, 0.43, 0.40), smoothstep(0.7, 0.9, nl.b) * 0.5);
+    alb = mix(alb, alb * 1.35 + vec3(0.02), smoothstep(0.55, 0.85, nl.g) * 0.35); // dust / faded felt
     float rough = 0.92 - 0.3 * smoothstep(0.7, 0.9, nl.r);
     if (style == 1.0) { alb = base * (0.7 + 0.5 * bNoise(q * 0.9).b); rough = 0.95; }
     bAlbedo = alb; bRough = rough; bMetal = 0.0;
@@ -719,10 +766,10 @@ void bSurface() {
       // shop sign: coloured board, glowing at night
       bAlbedo = base * 0.9;
       bRough = 0.4;
-      bEmis = base * (0.12 * uDay + 1.1 * uNight);
+      bEmis = base * (0.12 * uDay + 0.6 * uNight);
     } else {
       bAlbedo = vec3(0.9);
-      bEmis = vec3(1.0, 0.8, 0.55) * (uNight * 3.0);
+      bEmis = vec3(1.0, 0.8, 0.55) * (uNight * 2.0);
       bRough = 0.3;
     }
     return;

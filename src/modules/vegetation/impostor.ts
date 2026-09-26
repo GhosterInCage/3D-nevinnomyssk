@@ -3,7 +3,7 @@
 // camera-facing quads that blend the 4 nearest baked views, lit with the baked normals by the
 // standard three.js lighting (sun, sky, CSM shadows, fog), wind-swayed like the meshes.
 import * as THREE from 'three';
-import { GLSL_COMMON, GLSL_TRANSLUCENT, VU, protectOnBeforeCompile } from './materials';
+import { GLSL_COMMON, GLSL_TRANSLUCENT, LEAF_SPECULAR, VU, protectOnBeforeCompile } from './materials';
 
 export const MAX_SLOTS = 32;
 
@@ -352,7 +352,8 @@ export function makeImpostorMaterials(atlas: ImpostorAtlas, u: ImpostorUniforms,
       .replace('#include <normal_fragment_begin>', `float faceDirection = 1.0;
   vec3 normal = normalize((viewMatrix * vec4(impNw, 0.0)).xyz);
   vec3 nonPerturbedNormal = normal;`)
-      .replace('#include <normal_fragment_maps>', '');
+      .replace('#include <normal_fragment_maps>', '')
+      .replace('#include <lights_physical_fragment>', LEAF_SPECULAR);
   }, `impostor-${frames}`);
 
   const depth = new THREE.MeshDepthMaterial();

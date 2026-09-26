@@ -154,7 +154,7 @@ export class CompositePass extends Pass {
       uniforms: {
         starRot: { value: this.starRot },
         camPos: { value: new THREE.Vector3() },
-        pointSize: { value: 2.0 },
+        pointSize: { value: 2.5 },
         magnitudeRange: { value: new THREE.Vector2(-2, 8) },
         intensity: { value: 0 },
       },

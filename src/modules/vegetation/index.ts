@@ -84,6 +84,15 @@ async function generateModels(): Promise<Map<number, TreeModel>> {
 
 const idle = () => new Promise<void>((r) => setTimeout(r, 0));
 
+function softwareGL(r: THREE.WebGLRenderer): boolean {
+  try {
+    const gl = r.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    return /swiftshader|llvmpipe|software|basic render/i.test(name);
+  } catch { return false; }
+}
+
 let forest: Forest | null = null;
 let grassOn = true;
 let grass: Grass | null = null;
@@ -166,6 +175,9 @@ const mod: CityModule = {
       ]);
       data = d;
       const fp = forestParams(quality, prof.drawDistance, prof.shadowFar);
+      // software rasterisers (SwiftShader in the screenshot harness): single-view impostors are
+      // visually identical in a still frame and ~3x cheaper
+      if (softwareGL(ctx.renderer) && !dbg.has('hwimp')) fp.impBlend = false;
       const f = new Forest(ctx, d, fp);
       let slot = 0;
       for (const def of SPECIES) {
@@ -194,7 +206,7 @@ const mod: CityModule = {
         loadTexture(dataUrl('vegetation/covertype.png'), { srgb: false, flipY: false, nearest: true }),
         loadTexture(dataUrl(ctx.manifest.terrain.ortho), { srgb: true, flipY: false, mips: false }),
       ]);
-      grass = new Grass(ctx, new Uint8Array(bitsBuf), cover, ctype, ortho, q, QUALITY[q].vegetationDensity);
+      grass = new Grass(ctx, new Uint8Array(bitsBuf), cover, ctype, ortho, q, Math.sqrt(QUALITY[q].vegetationDensity));
       for (const r of pendingClears) grass.addClear(r);
     })();
     grassOn = prof.grass && !dbg.has('nograss');

@@ -12,7 +12,7 @@ The script runs in about 90 s (`--cache` reuses the 2 m distance fields in `data
 
 | file | content |
 |---|---|
-| `trees.bin.gz` (≈5.5 MB) | about 1.31 M instances: 0.89 M general trees, 39 k street trees, 0.37 M shrubs and 4.4 k clipped hedge runs, bucketed in 64 m cells (the binary layout is documented at the top of the script) |
+| `trees.bin.gz` (≈5.1 MB) | about 1.19 M instances: 0.80 M general trees, 36 k street trees, 0.38 M shrubs and 4.5 k clipped hedge runs, bucketed in 64 m cells (the binary layout is documented at the top of the script) |
 | `cover.jpg` (2.4 MB) | 2048² at 10 m: R = ground-cover density, G = dryness, B = height factor |
 | `covertype.png` (0.3 MB) | 2048² cover type: 0 lawn, 1 meadow/steppe, 2 reeds, 3 ripe cereal, 4 green crop (sunflower/maize), 5 stubble |
 | `nogrow.bin.gz` (1.3 MB) | 10240² bit mask at 2 m that blocks grass and shrubs: buildings, carriageways plus sidewalks, footways, rail beds, water |
@@ -51,12 +51,17 @@ The script runs in about 90 s (`--cache` reuses the 2 m distance fields in `data
 * **Grass** (`grass.ts`): 3–4 rings of instanced tufts around the camera out to 70–170 m, depending on quality. Positions are derived from `gl_InstanceID` on a world-aligned grid, so they stay stable as the camera moves. Height comes from `ctx.heightfield.texture`. Density, type and dryness come from the cover rasters, and a 2 m no-grow window around the camera (built from `nogrow.bin.gz` plus `clearInPolygon` rings) keeps grass off paved and built areas. Colour is matched to the terrain's Sentinel-2 ortho. Cover types are lawn, steppe, reeds along the rivers, ripe cereal with ears, tall green crop, and stubble, with some meadow flowers. Grass is wind-animated and fades out towards the outer radius.
 * **Quality** (`forestParams`, `grassRings`):
 
-  | tier | LOD0 | LOD1 / impostor switch | shrubs | impostor frame size | grass radius |
-  |---|---|---|---|---|---|
-  | low | – | 90 m | – | 32 px (single view) | no grass |
-  | medium | 45 m | 190 m | – | 48 px | 70 m |
-  | high | 75 m | 300 m | – | 64 px | 140 m |
-  | ultra | 110 m | 420 m | – | 96 px | 170 m |
+  | tier | tree LOD0 | LOD1 → impostor | shrubs (LOD0 / max) | impostor frame | thinning starts | grass radius |
+  |---|---|---|---|---|---|---|
+  | low | – | 90 m | – / 90 m | 32 px, single view | 500 m | no grass |
+  | medium | 45 m | 190 m | 28 / 190 m | 48 px, 4-view blend | 900 m | 70 m |
+  | high | 75 m | 300 m | 45 / 300 m | 64 px, 4-view blend | 1600 m | 140 m |
+  | ultra | 110 m | 420 m | 60 / 420 m | 96 px, 4-view blend | 2400 m | 170 m |
+
+  Eight common species (Lombardy and black poplar, robinia, elm, walnut, fruit tree, willow, maple) have two model variants, which gives 34 models and 28 impostor slots in total.
+
+* **Ground contact**: tree bases, hedges and grass follow the terrain as it is rendered. Tree bases use `terrain.heightAt` (the bicubic surface) and grass uses `terrain.glsl.heightfield`. Without the terrain module, both fall back to `ctx.heightfield`. Trunks are sunk to the lowest of 5 samples around the trunk, minus 12 cm.
+* **Software rasterisers** (SwiftShader, llvmpipe): the impostors use the single nearest view instead of the 4-view blend. A still frame looks almost the same and costs about 3× less. Add `?vegdbg=hwimp` to force the blend.
 
 ## Services and colliders
 

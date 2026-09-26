@@ -260,6 +260,8 @@ def shadow_features(geoms, scene_files, min_area=25.0, verbose=True):
     acc = np.zeros((n, nb))
     cnt = np.zeros((n, nb))
     hint = [[] for _ in range(n)]
+    hrec = [[] for _ in range(n)]
+    hmin = [[] for _ in range(n)]
     x0, y0 = -REGION_HALF + 5, REGION_HALF - 5
     areas = shapely.area(geoms)
     for f in scene_files:
@@ -316,6 +318,18 @@ def shadow_features(geoms, scene_files, min_area=25.0, verbose=True):
             np.add.at(cnt[k], bidx[inb], 1)
             dark = np.clip(1.0 - r[inb], 0, None)
             hint[k].append(float(np.trapezoid(dark, hs[inb])))
+            # recovery height: first height after the darkest point where the profile is back
+            # above halfway between its minimum and 1
+            ri = r[inb]
+            j0 = int(np.argmin(ri[: max(1, int(len(ri) * 0.8))]))
+            rmin = float(ri[j0])
+            rec = 0.0
+            if rmin < 0.85:
+                thr = 0.5 * (1.0 + rmin)
+                after = np.nonzero(ri[j0:] > thr)[0]
+                rec = float(hs[inb][j0 + after[0]]) if len(after) else float(hs[inb][-1])
+            hrec[k].append(rec)
+            hmin[k].append(rmin)
         if verbose:
             print(f"[shadow] {os.path.basename(f)} el={el:.1f} az={az:.1f}", flush=True)
     prof = np.where(cnt > 0, acc / np.maximum(cnt, 1), 1.0)
@@ -324,4 +338,8 @@ def shadow_features(geoms, scene_files, min_area=25.0, verbose=True):
     out = {f"sh_{int(H_BINS[i])}": prof[:, i] for i in range(nb)}
     out["sh_int"] = h_int
     out["sh_int_max"] = h_int_max
+    out["sh_int_min"] = np.array([np.min(h) if h else 0.0 for h in hint])
+    out["sh_rec"] = np.array([np.median(h) if h else 0.0 for h in hrec])
+    out["sh_rec_hi"] = np.array([np.percentile(h, 75) if h else 0.0 for h in hrec])
+    out["sh_min"] = np.array([np.median(h) if h else 1.0 for h in hmin])
     return out

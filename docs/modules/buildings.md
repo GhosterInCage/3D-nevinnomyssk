@@ -11,7 +11,8 @@ Every building footprint in the 20 km region is rendered in 3D: 57 419 cleaned O
 | `pipeline/buildings_geom.py` | geometry helpers: orthogonalisation, maximal-rectangle roof decomposition, MRR |
 | `pipeline/buildings_features.py` | per-building features: shape, DSM relief, summer and winter Sentinel-2 shadow profiles, land use, roads, density |
 | `pipeline/buildings_s2winter.py` | fetches five clear, low-sun winter Sentinel-2 L2A scenes (sun elevation 22–32°) |
-| `pipeline/buildings_textures.py` | generates `public/textures/buildings/noise.png` (CC0, procedural) |
+| `pipeline/buildings_fences.py` | infers street and side fences of private-house plots |
+| `pipeline/buildings_textures.py` | generates `public/textures/buildings/noise.bin`: 512² RGBA8 tileable noise, raw, CC0, procedural |
 | `src/modules/buildings/index.ts` | module entry: loading, ground sampling, spatial index, worker pool, tile streaming and LOD, service, colliders |
 | `src/modules/buildings/format.ts` | binary format reader, shared with the worker |
 | `src/modules/buildings/mesher.ts` | geometry generation: walls, flat and pitched roofs, parapets, balconies, canopies, roof equipment, house details |
@@ -67,7 +68,15 @@ Rebuild with `python3 pipeline/build_buildings.py`. Add `--refresh` to recompute
 
    Industrial heights come from the shadow profile, and from the DSM for large halls. The entrance side faces the nearest minor or service road, which is usually the courtyard driveway. The shop side faces the nearest major road, for apartment blocks within 3 km of the centre.
 
-5. **Pitched roofs.** Orthogonal footprints are covered by up to 4 overlapping maximal rectangles, found by a greedy set cover on the vertex grid. Each rectangle gets its own hip, gable or pyramid roof at a common pitch. Where two roofs interpenetrate, the result looks like a correct cross-gabled or L-shaped roof. Non-orthogonal footprints use the minimum rotated rectangle if IoU > 0.85. Otherwise they get a flat roof.
+5. **Plot fences.** Plot boundaries are not in the open data, so the pipeline infers them. Each private house is attached to its nearest drivable road within 45 m. Along each road side, plots run to the midpoints between neighbouring houses, extending 4–14 m to either side of the house.
+
+   The street fence line uses one offset per road side: the median distance of the house fronts, clamped between the road half-width plus verge (the same widths as `build_roads.py`) and 4 m beyond that. The fence is interrupted where the house front stands on the street line.
+
+   Each plot gets a gate and short side fences. All pieces are clipped against footprints and carriageways and split into pieces of at most 8 m, so the fence follows the terrain.
+
+   Fence types are corrugated steel sheet (62 %), sheet with brick pillars (10 %), wooden planks (18 %) and metal picket (10 %), with typical regional colours. The result is 26 919 houses on 4 445 street sides.
+
+6. **Pitched roofs.** Orthogonal footprints are covered by up to 4 overlapping maximal rectangles, found by a greedy set cover on the vertex grid. Each rectangle gets its own hip, gable or pyramid roof at a common pitch. Where two roofs interpenetrate, the result looks like a correct cross-gabled or L-shaped roof. Non-orthogonal footprints use the minimum rotated rectangle if IoU > 0.85. Otherwise they get a flat roof.
 
 ## Data format (`public/data/buildings/`)
 
@@ -76,12 +85,14 @@ Rebuild with `python3 pipeline/build_buildings.py`. Add `--refresh` to recompute
   - Vertices are stored in cm relative to the building centre, in the world x/z frame with z pointing south.
   - Outer rings have negative signed area in (x, z), so the outward normal of edge A→B is (−dz, dx).
   - File size is about 3.0 MB.
+- Version 2 adds plot fences after the roof parts: `u32 fenceStart[nTiles+1]`, then one 16-byte record per fence. A record holds `i16` x0, z0, x1, z1 in cm relative to the tile centre, a `u8` type (0 sheet, 1 sheet with brick pillars, 2 wood, 3 picket, 4 gate), a `u8` height in dm, `rgb`, a `u8` seed and 2 reserved bytes. There are about 133 k fence pieces, and the file is about 4.3 MB.
 - `ids.bin.gz` holds the first 16 hex digits of each Overture id, plus the OSM id and element type. It is loaded lazily after initialisation.
 - `meta.json` holds typology names, the building-name table, the model validation report and statistics.
 
 ## Runtime
 
 - **Ground.** On the main thread, the ground under each footprint is sampled from `ctx.heightfield` at every vertex and edge midpoint and at the centroid, giving `gMin` and `gMax`. The floor base is `max(gMin, gMax − 1.2) + socle`. Walls start 1 m below `gMin`, so slopes never show gaps. The module declares `after: ['terrain']`, so terrain edits made during the terrain module's init are respected.
+- **Loading.** The data file and the noise texture are fetched and gunzipped inside a worker. Under software GL, the main thread may only get one task per rendered frame, so keeping this work off the main thread matters. The initial meshing goes out as one batch per worker, which means one reply per worker. The timing log reads `[buildings] timing(ms) …`.
 - **Workers.** A pool of `hardwareConcurrency − 1` workers (at most 4) each holds a copy of the dataset.
   - The **base** mesh of a tile holds walls and roofs, including gable walls, shed walls and pitched roofs with overhang. Every tile has a base mesh, and it is shown within `profile.drawDistance`.
   - The **detail** mesh of a tile is built within a radius of 220, 420, 650 or 900 m (low, medium, high, ultra), reduced when the camera is high above the ground. It adds:
@@ -92,6 +103,7 @@ Rebuild with `python3 pipeline/build_buildings.py`. Add `--refresh` to recompute
     - roof equipment: elevator machine rooms on 9-storey blocks, vent stacks, TV antennas
     - eaves soffits, fascia boards and gutters
     - chimneys, antennas and downpipes on houses
+    - satellite dishes, clerestory roof monitors on large industrial halls, and **plot fences** (posts or brick pillars, gates)
 - **Vertex layout.** Each vertex has `position`, `normal` and `uv`, plus three custom attributes:
   - `aA` u8×4: kind, style, seed, levels
   - `aC` u8×4 normalised: sRGB colour and an aux byte
@@ -105,16 +117,22 @@ Rebuild with `python3 pipeline/build_buildings.py`. Add `--refresh` to recompute
   - Staircase windows are offset by half a floor above entrance doors.
   - The shopfronts are drawn procedurally too, along with panel seams with sealant patches, running-bond bricks with per-brick colour, plaster, siding, corrugated cladding, garage gates, stalinka rustication, cornices and window surrounds, a socle with basement vents, and dirt streaks and grime.
   - Roofing profiles are rendered as normal perturbation: corrugated sheet, metal tile, asbestos slate with lichen, standing seam and greenhouse glazing. Flat roofs get bitumen with patches.
-  - At a distance, windows fade to their average colour to avoid moiré. Beyond the detail radius, loggias are drawn as faux loggias in the shader.
+  - Private houses get painted window trims (nalichniki), shutters on some houses, and a door. Industrial walls get sectional doors.
+  - The shader has three distance levels, measured in metres per pixel:
+    - near: full detail
+    - mid (> 6 cm/px): flat window rectangles and pattern averages, with explicit-LOD noise lookups only
+    - far (window cell < 2.5 px): windows fold into the average facade colour, which avoids moiré
+  - Beyond the detail radius, loggias are drawn as faux loggias in the shader.
   - At night, windows light up from a hashed fraction of rooms that depends on the hour. Lamps are warm or cool, with occasional TV blue. Entrance lamps, a glow on the wall around them, and shop signs are emissive, scaled by `ctx.env.night`.
 - **Service `buildings`.**
   - `hideById(ids)`, returns a Promise. It accepts Overture ids (full or 16-hex prefix), `w123` or `r123` OSM ids, and `#index`.
   - `hideInPolygon(ringXZ)` hides buildings whose centroid lies inside the polygon, or whose vertices are mostly inside it.
   - `infoAt(x, z)` returns `{index, id, name, levels, height, cls, base, top, labelled}`.
-  - `count`, `query(x, z, r)`, `footprint(i)`, `roofAt(x, z)` and `ready`.
+  - `count`, `query(x, z, r)`, `footprint(i)`, `roofAt(x, z)`, `idOf(i)`, `info(i)` and `ready`.
 
   Hiding rebuilds only the affected tiles.
 - **Colliders.** `ctx.registerColliders({id: 'buildings'})` returns prisms. The `ring` is the outer ring as world `[x0, z0, x1, z1, …]`, `minY` is `gMin − 1`, and `maxY` is the eave plus half the roof. Keys have the form `bld:<index>`.
+- **Path tracer.** Each chunk mesh has a `color` attribute holding a linear average albedo (walls darkened by their windows), and `userData.ptMaterial` is a `MeshStandardMaterial` with `vertexColors`. The procedural shader itself is not visible to the path tracer.
 - **Isolated runs.** With `?only=buildings` and the sky module absent, the module adds its own simple sun and hemisphere lights.
 
 ## Performance
@@ -130,4 +148,4 @@ Measured in Node with the same mesher:
 - Footprints: © OpenStreetMap contributors (ODbL), and Microsoft ML Building Footprints (ODbL), both via Overture Maps.
 - Copernicus DEM GLO-30: © DLR/Airbus, provided under COPERNICUS by the European Union and ESA.
 - Sentinel-2: Copernicus Sentinel data 2023–2026.
-- `noise.png` is generated procedurally (CC0).
+- `noise.bin` is generated procedurally (CC0).

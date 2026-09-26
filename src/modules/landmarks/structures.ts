@@ -41,6 +41,17 @@ export interface Frame {
   key: string;
 }
 
+const SODIUM = new THREE.Color(2.2, 1.15, 0.35);
+const LED = new THREE.Color(1.7, 1.8, 1.9);
+/** Plant work light (night-only glow + tiny emissive housing in the detail layer). */
+export function workLight(fr: Frame, d: Geo | null, x: number, y: number, z: number, warm = true): void {
+  if (d) {
+    d.paint(warm ? col('#ffb060') : col('#e8f0ff'), P.LAMP, 0.4, 0, 0);
+    d.boxC(x, y - 0.12, z, 0.25, 0.12, 0.25);
+  }
+  fr.glows.push({ x: fr.ox + x, y: fr.oy + y, z: fr.oz + z, color: warm ? SODIUM : LED, size: 1.1, day: 0 });
+}
+
 let _ck = 0;
 export function colliderKey(prefix: string): string { return `lm:${prefix}:${_ck++}`; }
 
@@ -382,15 +393,37 @@ export function openBoiler(g: Geo, d: Geo, x: number, y0: number, z: number, sx:
   const colW = 0.8;
   g.paint(C.steelDark, P.METAL, 0.6, 0.4);
   for (const px of [-sx / 2, 0, sx / 2]) for (const pz of [-sz / 2, sz / 2]) g.box(px - colW / 2, 0, pz - colW / 2, px + colW / 2, h, pz + colW / 2);
-  // furnace casing (upper 70 %) in silver-grey profiled sheet
+  // furnace (tall) + convective pass (lower) casings in silver-grey profiled sheet, 2 m gap between
   const cas = mix3(C.alu, C.panelBlue, 0.35 + R() * 0.2);
+  const fx1 = -sx / 2 + 1 + (sx - 2) * 0.58;
   g.paint(cas, P.CORR, 0.45, 0.45);
-  g.box(-sx / 2 + 1, h * 0.28, -sz / 2 + 1, sx / 2 - 1, h - 3, sz / 2 - 1);
+  g.box(-sx / 2 + 1, h * 0.28, -sz / 2 + 1, fx1, h - 3, sz / 2 - 1);
+  g.paint(mix3(cas, C.steel, 0.25), P.CORR, 0.5, 0.45);
+  g.box(fx1 + 2, h * 0.2, -sz / 2 + 1.5, sx / 2 - 1, h - 3, sz / 2 - 1.5);
+  // horizontal gas pass bridging the upper part (the slot between the passes stays open below)
+  g.paint(cas, P.CORR, 0.45, 0.45);
+  g.box(fx1, h * 0.62, -sz / 2 + 1.5, fx1 + 2, h - 3, sz / 2 - 1.5, 63 - 1 - 2);
   // penthouse and drum housing
   g.paint(mix3(cas, C.white, 0.2), P.CORR, 0.5, 0.35);
   g.box(-sx / 2 + 2, h - 3, -sz / 2 + 2, sx / 2 - 2, h + 2.5, sz / 2 - 2);
   g.paint(C.steelDark, P.METAL, 0.6, 0.3);
   g.box(-sx / 2 + 1.8, h + 2.5, -sz / 2 + 1.8, sx / 2 - 1.8, h + 2.9, sz / 2 - 1.8);
+  // service walkways with yellow railings every 7 m around the casing
+  for (let yy = h * 0.3 + 3; yy < h - 4; yy += 7) {
+    d.paint(C.steelDark, P.GRATE, 0.7, 0.4);
+    d.box(-sx / 2 - 0.2, yy - 0.12, -sz / 2 - 0.2, sx / 2 + 0.2, yy, -sz / 2 + 1);
+    d.box(-sx / 2 - 0.2, yy - 0.12, sz / 2 - 1, sx / 2 + 0.2, yy, sz / 2 + 0.2);
+    d.paint(col('#c9a53a'), P.METAL, 0.6, 0.3);
+    d.railing([-sx / 2 - 0.2, yy, -sz / 2 - 0.2, sx / 2 + 0.2, yy, -sz / 2 - 0.2], 1.05, 2, 0.05);
+    d.railing([sx / 2 + 0.2, yy, sz / 2 + 0.2, -sx / 2 - 0.2, yy, sz / 2 + 0.2], 1.05, 2, 0.05);
+  }
+  // risers / downcomers on the furnace walls
+  d.paint(C.alu, P.METAL, 0.4, 0.6);
+  for (let i = 0; i < 4; i++) {
+    const px = -sx / 2 + 3 + i * ((fx1 - (-sx / 2) - 4) / 3);
+    d.pipe([px, h * 0.28, -sz / 2 + 0.6], [px, h - 1, -sz / 2 + 0.6], 0.28, 8);
+    d.pipe([px, h * 0.28, sz / 2 - 0.6], [px, h - 1, sz / 2 - 0.6], 0.28, 8);
+  }
   // bottom: burners level, ash hopper, pipework
   g.paint(C.steel, P.METAL, 0.6, 0.35);
   g.box(-sx / 2 + 3, 6, -sz / 2 + 3, sx / 2 - 3, h * 0.28, sz / 2 - 3);
@@ -432,14 +465,14 @@ export function pipeRack(fr: Frame, g: Geo, d: Geo, pts: number[], seed: number)
   const tiers = R() < 0.4 ? 2 : 1;
   const hTop = 5.5 + Math.floor(R() * 3);
   const w = 4 + Math.floor(R() * 3);
-  const np = 3 + Math.floor(R() * 5);
+  const np = 4 + Math.floor(R() * 6);
   const pipes: Array<{ o: number; r: number; c: RGB; y: number }> = [];
   for (let t = 0; t < tiers; t++) {
     const yT = hTop - t * 2.2;
     const n = t === 0 ? np : 2 + Math.floor(R() * 3);
     for (let i = 0; i < n; i++) {
-      const r = [0.08, 0.12, 0.16, 0.22, 0.3, 0.4][Math.floor(R() * 6)];
-      pipes.push({ o: -w / 2 + 0.4 + ((w - 0.8) * (i + 0.5)) / n, r, c: PIPE_COLS[Math.floor(R() * PIPE_COLS.length)], y: yT + r + 0.25 });
+      const r = [0.1, 0.15, 0.2, 0.25, 0.32, 0.45, 0.6][Math.floor(R() * 7)];
+      pipes.push({ o: -w / 2 + 0.4 + ((w - 0.8) * (i + 0.5)) / n, r: Math.min(r, (w - 0.8) / n / 2 - 0.05), c: PIPE_COLS[Math.floor(R() * PIPE_COLS.length)], y: yT + r + 0.25 });
     }
   }
   // racks are level: common base = highest ground along the rack
@@ -453,10 +486,10 @@ export function pipeRack(fr: Frame, g: Geo, d: Geo, pts: number[], seed: number)
     const nx = -dz, nz = dx;
     for (const p of pipes) {
       g.paint(p.c, P.METAL, p.c === C.alu ? 0.4 : 0.55, p.c === C.alu ? 0.6 : 0.25);
-      g.pipe([ax + nx * p.o, base + p.y, az + nz * p.o], [bx + nx * p.o, base + p.y, bz + nz * p.o], p.r, p.r > 0.2 ? 8 : 6);
+      g.pipe([ax + nx * p.o, base + p.y, az + nz * p.o], [bx + nx * p.o, base + p.y, bz + nz * p.o], p.r, p.r > 0.25 ? 8 : 5);
     }
     // bents every 6 m
-    const nb = Math.max(1, Math.round(L / 6));
+    const nb = Math.max(1, Math.round(L / 7.5));
     for (let i = 0; i <= nb; i++) {
       if (i === nb && k + 4 < pts.length) continue;
       const t = i / nb;
@@ -477,6 +510,10 @@ export function pipeRack(fr: Frame, g: Geo, d: Geo, pts: number[], seed: number)
     d.paint(C.steel, P.METAL, 0.65, 0.35);
     for (const s of [-1, 1]) {
       d.beam([ax + nx * s * w / 2, base + hTop, az + nz * s * w / 2], [bx + nx * s * w / 2, base + hTop, bz + nz * s * w / 2], 0.2, 0.25);
+    }
+    // lamps under the rack every ~40 m (road lighting inside the plant)
+    for (let t = 0.5 / Math.max(1, Math.round(L / 40)); t < 1; t += 1 / Math.max(1, Math.round(L / 40))) {
+      workLight(fr, d, ax + (bx - ax) * t - nx * (w / 2 + 0.3), base + hTop - 0.4, az + (bz - az) * t - nz * (w / 2 + 0.3), true);
     }
   }
 }
@@ -593,4 +630,7 @@ export function processCell(fr: Frame, g: Geo, d: Geo, x: number, z: number, see
   // connecting small-bore pipes to grade
   d.paint(C.alu, P.METAL, 0.45, 0.5);
   if (R() < 0.7) d.pipe([x - 4, y0 + 3 + R() * 3, z + jz], [x + 4, y0 + 3 + R() * 3, z + jz], 0.12, 6);
+  // work lights on platforms / structures
+  const nl = R() < 0.35 ? 2 : 1;
+  for (let i = 0; i < nl; i++) workLight(fr, d, x + (R() - 0.5) * 7, y0 + 3 + R() * H * 0.7, z + (R() - 0.5) * 7, R() < 0.75);
 }

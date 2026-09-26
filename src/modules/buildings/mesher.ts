@@ -363,6 +363,17 @@ function building(c: Ctx, i: number, gMin: number, gMax: number): void {
   b.cr = wr; b.cg = wg; b.cb = wb; b.aux = typ;
   const fhdm = Math.min(255, Math.round(floorH * 10));
   const wallsInfo: Array<{ ax: number; az: number; bx: number; bz: number; L: number; nx: number; nz: number; nCols: number; cellW: number; margin: number; secCols: number; entrance: boolean; shop: boolean; hole: boolean }> = [];
+  // longest outer wall: end walls (torets) of elongated slab blocks are mostly blank
+  let longest = 0;
+  {
+    const r0 = rings[0], n0 = r0.length / 2;
+    for (let k = 0; k < n0; k++) {
+      const L = Math.hypot(r0[2 * ((k + 1) % n0)] - r0[2 * k], r0[2 * ((k + 1) % n0) + 1] - r0[2 * k + 1]);
+      if (L > longest) longest = L;
+    }
+  }
+  const slab = (typ === Typ.Khrushchevka || typ === Typ.Panel9 || typ === Typ.LowriseApt || typ === Typ.ModernApt) && longest > 30;
+  const endWallMode = hash(seed, 77) < 0.5 ? 0 : 1; // 0 blank, 1 two corner-room windows
   for (let r = 0; r < rings.length; r++) {
     const ring = rings[r];
     const n = ring.length / 2;
@@ -376,6 +387,10 @@ function building(c: Ctx, i: number, gMin: number, gMax: number): void {
       let cellW = cellW0;
       let nCols = Math.floor((L - 0.8) / cellW);
       if (nCols < 1) { nCols = L > 2.0 && style !== Wall.Plain ? 1 : 0; cellW = Math.min(cellW, L - 0.4); }
+      if (slab && r === 0 && L < 16.5 && L < longest * 0.4) {
+        if (endWallMode === 0) nCols = 0;
+        else { nCols = 2; cellW = Math.min(L / 2 - 0.3, 5.5); }
+      }
       // stretch cells slightly to fill the wall evenly
       if (nCols >= 2) {
         const want = (L - 1.2) / nCols;
@@ -476,7 +491,13 @@ function roofFace(b: Buf, pts: number[][], yE: number, sinP: number): void {
   const ex = -nz / hl, ez = nx / hl;
   b.reserve(pts.length, (pts.length - 2) * 3);
   const base = b.n;
+  // slope length (eave -> ridge) for ridge caps in the shader
+  let yTop = -Infinity;
+  for (const p of pts) yTop = Math.max(yTop, p[1]);
+  const w0 = b.w0;
+  b.w0 = Math.min(65535, Math.round(((yTop - yE) / Math.max(0.05, sinP)) * 100));
   for (const p of pts) b.vert(p[0], p[1], p[2], nx, ny, nz, p[0] * ex + p[2] * ez, (p[1] - yE) / Math.max(0.05, sinP));
+  b.w0 = w0;
   for (let k = 1; k + 1 < pts.length; k++) {
     if (flip) b.tri(base, base + k + 1, base + k); else b.tri(base, base + k, base + k + 1);
   }

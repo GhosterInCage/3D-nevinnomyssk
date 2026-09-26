@@ -1,0 +1,85 @@
+// Inline SVG icons (24x24 stroke icons, drawn for this project in a Lucide-like style).
+const svg = (body: string, extra = '') =>
+  `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
+
+export const ICON = {
+  search: svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/>'),
+  x: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+  fly: svg('<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/>'),
+  walk: svg('<circle cx="13" cy="4" r="2"/><path d="m9 20 3-6 3 3v4"/><path d="m6 12 3-4 4 1 3 4 3 1"/><path d="m12 14-1-5"/>'),
+  car: svg('<path d="M5 17H3v-5l2-5h14l2 5v5h-2"/><path d="M3 12h18"/><circle cx="7.5" cy="17" r="2"/><circle cx="16.5" cy="17" r="2"/><path d="M9.5 17h5"/>'),
+  sparkles: svg('<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/><path d="M5 16l.6 1.4L7 18l-1.4.6L5 20l-.6-1.4L3 18l1.4-.6z"/>'),
+  camera: svg('<path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/>'),
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  moon: svg('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>'),
+  cloudSun: svg('<path d="M12 2v2M4.9 4.9l1.4 1.4M20 12h2M17.7 6.3l1.4-1.4"/><path d="M15.9 13.1A4 4 0 1 0 8.4 9.3"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6z"/>'),
+  cloud: svg('<path d="M17.5 19H8a6 6 0 1 1 5.7-8h.8a4.5 4.5 0 0 1 3 8z"/>'),
+  overcast: svg('<path d="M17.5 21H8a6 6 0 1 1 5.7-8h.8a4.5 4.5 0 0 1 3 8z"/><path d="M20 12.5a4 4 0 0 0-3.2-6.4 5.5 5.5 0 0 0-9.8 1"/>'),
+  rain: svg('<path d="M16 14.5a4.5 4.5 0 0 0-1.5-8.7A6 6 0 0 0 4 9.7 4 4 0 0 0 6 17"/><path d="M8 19v2M8 13v2M12 21v2M12 15v2M16 19v2M16 13v2"/>'),
+  storm: svg('<path d="M16 14.5a4.5 4.5 0 0 0-1.5-8.7A6 6 0 0 0 4 9.7 4 4 0 0 0 6 17"/><path d="m13 11-4 6h6l-4 6"/>'),
+  fog: svg('<path d="M16 13a4.5 4.5 0 0 0-1.5-8.7A6 6 0 0 0 4 8.2"/><path d="M3 13h12M5 17h14M7 21h10"/>'),
+  clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  sliders: svg('<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'),
+  link: svg('<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>'),
+  share: svg('<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>'),
+  activity: svg('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+  help: svg('<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>'),
+  maximize: svg('<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>'),
+  minimize: svg('<path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>'),
+  map: svg('<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>'),
+  plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  minus: svg('<path d="M5 12h14"/>'),
+  expand: svg('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
+  pin: svg('<path d="M12 22s-7-5.6-7-12a7 7 0 0 1 14 0c0 6.4-7 12-7 12z"/><circle cx="12" cy="10" r="2.5"/>'),
+  play: svg('<path d="M7 4v16l13-8z"/>', 'fill="currentColor"'),
+  pause: svg('<path d="M7 4h3v16H7zM14 4h3v16h-3z"/>', 'fill="currentColor"'),
+  layers: svg('<path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>'),
+  up: svg('<path d="m6 15 6-6 6 6"/>'),
+  down: svg('<path d="m6 9 6 6 6-6"/>'),
+  target: svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>'),
+  info: svg('<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/>'),
+  globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
+  keyboard: svg('<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),
+  mouse: svg('<rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/>'),
+  hand: svg('<path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/>'),
+};
+
+/** Small glyphs (drawn white inside a coloured disc) + colours per place kind. */
+const g = (body: string) => `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+
+export const KIND_STYLE: Record<string, { color: string; glyph: string }> = {
+  district: { color: '#e9eef5', glyph: g('<path d="M3 21h18M5 21V8l7-4 7 4v13"/>') },
+  settlement: { color: '#d8c7a3', glyph: g('<path d="M3 21h18M6 21v-8l6-5 6 5v8"/>') },
+  landmark: { color: '#ffb547', glyph: g('<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>') },
+  church: { color: '#ffd166', glyph: g('<path d="M12 2v8M9 5h6M6 22V13l6-3 6 3v9"/>') },
+  monument: { color: '#ff8a5b', glyph: g('<path d="M12 2 10 7v13h4V7zM6 22h12"/>') },
+  park: { color: '#57d68d', glyph: g('<path d="M12 22v-6M12 2 6 12h4l-3 4h10l-3-4h4z"/>') },
+  water: { color: '#5cb8ff', glyph: g('<path d="M2 9c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0M2 16c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0"/>') },
+  street: { color: '#c7d0db', glyph: g('<path d="M8 3 5 21M16 3l3 18M12 4v3M12 11v3M12 18v2"/>') },
+  station: { color: '#9aa7ff', glyph: g('<rect x="5" y="3" width="14" height="13" rx="3"/><path d="M5 10h14M8 20l-2 2M16 20l2 2"/>') },
+  bus_station: { color: '#7fd3e6', glyph: g('<rect x="4" y="3" width="16" height="15" rx="2"/><path d="M4 10h16M7 21v-3M17 21v-3"/>') },
+  bus_stop: { color: '#7fd3e6', glyph: g('<path d="M8 22V3h9v7H8"/>') },
+  industry: { color: '#b0a18f', glyph: g('<path d="M3 21V10l6 3V9l6 3V4h5v17z"/>') },
+  power: { color: '#ffe066', glyph: g('<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>') },
+  education: { color: '#f4a3ff', glyph: g('<path d="m2 9 10-5 10 5-10 5z"/><path d="M6 11v5c3 2 9 2 12 0v-5"/>') },
+  medical: { color: '#ff6b7a', glyph: g('<path d="M12 5v14M5 12h14"/>') },
+  culture: { color: '#c39bff', glyph: g('<path d="M4 4h16v10a8 8 0 0 1-16 0z"/><path d="M9 9h.01M15 9h.01M9 14c1.7 1.4 4.3 1.4 6 0"/>') },
+  sport: { color: '#6ee7b7', glyph: g('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>') },
+  mall: { color: '#ffa94d', glyph: g('<path d="M5 8h14l-1 13H6zM9 8V6a3 3 0 0 1 6 0v2"/>') },
+  shop: { color: '#ffa94d', glyph: g('<path d="M5 8h14l-1 13H6zM9 8V6a3 3 0 0 1 6 0v2"/>') },
+  food: { color: '#ff9f68', glyph: g('<path d="M5 3v8a3 3 0 0 0 6 0V3M8 3v19M17 3c-2 2-2 7 0 9v10"/>') },
+  hotel: { color: '#8ecbff', glyph: g('<path d="M3 20V6M3 13h18v7M21 13a3 3 0 0 0-3-3h-7v3"/><circle cx="7" cy="10" r="1.5"/>') },
+  gov: { color: '#a5b4c8', glyph: g('<path d="M3 21h18M5 21V10M19 21V10M9 21V10M15 21V10M2 10 12 3l10 7z"/>') },
+  fuel: { color: '#ffcf5c', glyph: g('<path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M3 21h12M14 10h2a2 2 0 0 1 2 2v4a1.5 1.5 0 0 0 3 0V8l-3-3M4 10h10"/>') },
+  service: { color: '#9fb0c0', glyph: g('<circle cx="12" cy="12" r="3"/>') },
+  allotment: { color: '#9bd67a', glyph: g('<path d="M12 22V11M12 11c0-4 3-7 7-7 0 4-3 7-7 7zM12 14c0-3-2-5-6-5 0 3 2 5 6 5z"/>') },
+  viewpoint: { color: '#7dd3fc', glyph: g('<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/>') },
+  nature: { color: '#a3e635', glyph: g('<path d="m3 20 6-11 4 6 3-4 5 9z"/>') },
+  building: { color: '#cbd5e1', glyph: g('<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M9 15h.01M15 15h.01"/>') },
+  bridge: { color: '#c7d0db', glyph: g('<path d="M2 16h20M4 16V9M20 16V9M4 9c5 5 11 5 16 0"/>') },
+  coords: { color: '#7cc4ff', glyph: g('<circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>') },
+};
+
+export function kindStyle(kind: string) {
+  return KIND_STYLE[kind] ?? KIND_STYLE.service;
+}

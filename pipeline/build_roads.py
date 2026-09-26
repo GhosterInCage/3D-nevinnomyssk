@@ -73,8 +73,8 @@ SURF_NAMES = ["asphalt", "asphalt_old", "concrete", "gravel", "dirt", "paving", 
 RAISED = {S_PAVING: 0.18, S_SIDEWALK: 0.18, S_BALLAST: 0.35, S_PLATFORM: 0.9}
 
 # polyline kinds in lrec
-K_SKIRT, K_CURB, K_MARK, K_TRACK, K_FENCE, K_WALL, K_PARAPET, K_GUARD = range(8)
-KIND_NAMES = ["skirt", "curb", "marking", "track", "fence", "wall", "parapet", "guardrail"]
+K_SKIRT, K_CURB, K_MARK, K_TRACK, K_FENCE, K_WALL, K_PARAPET, K_GUARD, K_PLATMARK = range(9)
+KIND_NAMES = ["skirt", "curb", "marking", "track", "fence", "wall", "parapet", "guardrail", "platform_line"]
 # marking styles
 M_SOLID, M_DASH_URBAN, M_DASH_RURAL, M_EDGE, M_ZEBRA, M_STOP, M_ZEBRA_Y, M_DASH_SHORT = range(8)
 MARK_STYLES = [
@@ -1031,7 +1031,10 @@ def build_ground(polys, rlines, junctions):
     pk.index["glat"] = pk.packer.add(np.concatenate(GL))
     pk.index["gatt"] = pk.packer.add(np.concatenate(GA))
     pk.index["gdir"] = pk.packer.add(np.concatenate(GD))
-    pk.index["gidx"] = pk.packer.add(np.concatenate(GI))
+    GIc = np.concatenate(GI)
+    if max(t["nv"] for t in tiles) < 65536:
+        GIc = GIc.astype("<u2")  # tile-local indices fit in 16 bits
+    pk.index["gidx"] = pk.packer.add(GIc)
     log(f"ground: {len(tiles)} tiles, {vtot} vertices, {itot // 3} triangles")
 
     # skirts (raised surfaces), curbs
@@ -1052,6 +1055,20 @@ def build_ground(polys, rlines, junctions):
                 pts = np.array(ring.coords)
                 if sid == S_PLATFORM:
                     pool.add(pts, K_SKIRT, sid, 0)
+                    # yellow safety line 0.6 m from the platform edge along the tracks
+                    dense = resample(pts, 1.5)
+                    near = shapely.dwithin(surfaces[S_BALLAST], shapely.points(dense), 0.8) if not surfaces[S_BALLAST].is_empty else np.zeros(len(dense), bool)
+                    start = None
+                    for k in range(len(dense) + 1):
+                        on = k < len(dense) and near[k]
+                        if on and start is None:
+                            start = k
+                        elif not on and start is not None:
+                            run = dense[start:k]
+                            if len(run) >= 3:
+                                line = offset_polyline(np.array(LineString(run).simplify(0.05).coords), 0.6)
+                                pool.add(line, K_PLATMARK, 0, 0.12)
+                            start = None
                     continue
                 # split into runs: along a carriageway -> vertical curb face; elsewhere -> bevel / slope
                 dense = resample(pts, 1.5)

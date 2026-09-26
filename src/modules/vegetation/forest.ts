@@ -131,9 +131,16 @@ export class Forest {
   private quad = impostorQuad();
   stats = { lod0: 0, lod1: 0, imp: 0, chunks: 0, meshTris: 0, meshCalls: 0 };
 
+  /** Ground height as rendered: the terrain service's bicubic surface when present, else HeightField. */
+  readonly ground: { sample(x: number, z: number): number };
+
   constructor(private ctx: AppContext, private data: VegData, public p: ForestParams) {
     this.group.name = 'vegetation-forest';
     ctx.scene.add(this.group);
+    const t = ctx.get<any>('terrain');
+    this.ground = t && typeof t.heightAt === 'function'
+      ? { sample: (x: number, z: number) => { const h = t.heightAt(x, z); return Number.isFinite(h) ? h : ctx.heightfield.sample(x, z); } }
+      : { sample: (x: number, z: number) => ctx.heightfield.sample(x, z) };
   }
 
   /** Runtime species (variant) used for instance k. */
@@ -217,7 +224,7 @@ export class Forest {
     d.forCells(x0 + 1, z0 + 1, x0 + CHUNK - 1, z0 + CHUNK - 1, (c) => {
       const s = d.cellStart[c], e = d.cellStart[c + 1];
       if (s === e) return;
-      d.ensureHeights(c, hf);
+      d.ensureHeights(c, this.ground);
       for (let k = s; k < e; k++) {
         if (d.removed[k]) continue;
         const sp = this.pick(k);
@@ -326,7 +333,7 @@ export class Forest {
         const col = c % d.C, row = (c / d.C) | 0;
         const cx = d.origin + (col + 0.5) * d.cell, cz = d.origin + (row + 0.5) * d.cell;
         if (Math.hypot(cx - P.x, cz - P.z) > hr + d.cell) return;
-        d.ensureHeights(c, hf);
+        d.ensureHeights(c, this.ground);
         for (let k = s; k < e; k++) {
           if (d.removed[k]) continue;
           const sp = this.pick(k);
@@ -416,7 +423,7 @@ export class Forest {
     for (let i = 0; i < n; i++) {
       const t = (i - (n - 1) / 2) * seg;
       const x = d.x[k] + dirx * t, z = d.z[k] + dirz * t;
-      const y = this.ctx.heightfield.sample(x, z) - 0.1;
+      const y = this.ground.sample(x, z) - 0.1;
       this.push(set, x, y, z, d.rot[k], seg / 2, sy, 1);
     }
     return true;
@@ -479,7 +486,7 @@ export class Forest {
     d.forCells(x - r, z - r, x + r, z + r, (c) => {
       const s = d.cellStart[c], e = d.cellStart[c + 1];
       if (s === e) return;
-      d.ensureHeights(c, this.ctx.heightfield);
+      d.ensureHeights(c, this.ground);
       for (let k = s; k < e; k++) {
         if (d.removed[k]) continue;
         const sp = this.pick(k);

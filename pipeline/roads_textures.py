@@ -275,8 +275,8 @@ def main():
         albs.append(a8)
         nrms.append(n8)
         print(fn.__name__, "mean albedo(lin)", np.round(alb.reshape(-1, 3).mean(0), 3), "rough", round(float(rough.mean()), 2))
-    Image.fromarray(np.concatenate(albs, 0)).save(os.path.join(OUT, "surf_albedo.jpg"), quality=88, optimize=True)
-    Image.fromarray(np.concatenate(nrms, 0)).save(os.path.join(OUT, "surf_nrm.jpg"), quality=84, optimize=True)
+    Image.fromarray(np.concatenate(albs, 0)).save(os.path.join(OUT, "surf_albedo.jpg"), quality=84, optimize=True, progressive=True)
+    Image.fromarray(np.concatenate(nrms, 0)).save(os.path.join(OUT, "surf_nrm.jpg"), quality=78, optimize=True, progressive=True)
     # small preview for humans
     prev = np.concatenate([a[::4, ::4] for a in albs], 1)
     if os.environ.get("PREVIEW"):

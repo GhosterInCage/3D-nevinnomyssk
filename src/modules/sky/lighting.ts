@@ -92,6 +92,7 @@ export class SkyLighting {
 
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
+  private tmpF = new THREE.Vector3();
   private tmpC = new THREE.Color();
   private tmpC2 = new THREE.Color();
   private eciToECEF = new THREE.Matrix4();
@@ -142,8 +143,29 @@ export class SkyLighting {
     this.pmrem = new THREE.PMREMGenerator(ctx.renderer);
   }
 
+  private dummyLights: THREE.HemisphereLight[] = [];
+
   applyQuality(): void {
     const prof = this.ctx.settings.profile;
+    const cascades = Math.max(1, Math.min(4, prof.shadowCascades));
+    if (cascades !== this.shadow.cascades) {
+      // The cascade count is a shader define: patch the chunk, swap the shadow and
+      // change the lights hash (one more zero-intensity hemisphere light) so every
+      // lit program is recompiled with the new chunk instead of reusing the cache.
+      patchShadowChunk(cascades);
+      const old = this.shadow;
+      const sh = new CityShadow(cascades, prof.shadowMapSize);
+      sh.radius = old.radius;
+      sh.normalBias = old.normalBias;
+      (this.sun as any).shadow = sh;
+      (this as any).shadow = sh;
+      old.map?.dispose();
+      const d = new THREE.HemisphereLight(0x000000, 0x000000, 0);
+      d.name = 'sky:recompile-token';
+      d.userData.noPathTrace = true;
+      this.ctx.scene.add(d);
+      this.dummyLights.push(d);
+    }
     this.shadow.endDistance = prof.shadowFar;
     if (this.shadow.mapSize.x !== prof.shadowMapSize) {
       this.shadow.mapSize.set(prof.shadowMapSize, prof.shadowMapSize);
@@ -253,7 +275,7 @@ export class SkyLighting {
     u.skMoonDirECEF.value.copy(this.moonDirECEF);
     u.skSunDirW.value.copy(env.sunDirection);
     u.skMoonDirW.value.copy(this.moonDirW);
-    u.skMoonLight.value = moonScale * nightK * moonUp;
+    u.skMoonLight.value = moonScale * nightK * moonUp * 0.45; // moonlit sky a bit darker than physical (dark-adapted look)
     u.skMoonIrr.value.set(this.moonIrr.r, this.moonIrr.g, this.moonIrr.b).multiplyScalar(nightK * moonUp);
     u.skTime.value = env.elapsed;
 
@@ -268,10 +290,11 @@ export class SkyLighting {
     const skyH = lum(this.skyIrr) * S;
     const sunH = Math.max(0, env.sunDirection.y);
     u.skFogSun.value.set(this.sunIrr.r, this.sunIrr.g, this.sunIrr.b).multiplyScalar(S * (1 - 0.8 * overcast) / (4 * Math.PI) * 4 * 0.9);
+    const fa = this.tmpF;
     u.skFogAmb.value.set(this.skyIrr.r, this.skyIrr.g, this.skyIrr.b).multiplyScalar(S * 0.9 / Math.PI)
-      .addScaledVector(new THREE.Vector3(this.sunIrr.r, this.sunIrr.g, this.sunIrr.b), S * sunH * 0.25 * overcast / Math.PI)
-      .addScaledVector(new THREE.Vector3(0.02, 0.013, 0.0075), nk * 0.6)
-      .addScaledVector(new THREE.Vector3(this.moonIrr.r, this.moonIrr.g, this.moonIrr.b), S * nightK * moonUp * 0.15);
+      .addScaledVector(fa.set(this.sunIrr.r, this.sunIrr.g, this.sunIrr.b), S * sunH * 0.25 * overcast / Math.PI)
+      .addScaledVector(fa.set(0.02, 0.013, 0.0075), nk * 0.6)
+      .addScaledVector(fa.set(this.moonIrr.r, this.moonIrr.g, this.moonIrr.b), S * nightK * moonUp * 0.15);
 
     // ---- cloud lighting (at cloud mid altitude above the camera; luminance, unscaled)
     const cloudAlt = u.skCloudP1.value.x + u.skCloudP1.value.y * 0.5;
@@ -308,7 +331,7 @@ export class SkyLighting {
 
     // stars rotation (ECI -> ECEF -> world)
     this.starRot.setFromMatrix4(this.tmpM4.copy(this.frame.ecefToWorld).setPosition(0, 0, 0).multiply(this.eciToECEF));
-    this.starIntensity = THREE.MathUtils.smoothstep(-sunEl, 7, 14) * (1 - cc * 0.9) * 0.35;
+    this.starIntensity = THREE.MathUtils.smoothstep(-sunEl, 7, 14) * (1 - cc * 0.9) * 1.2;
   }
 
   readonly starRot = new THREE.Matrix3();
@@ -329,6 +352,8 @@ export class SkyLighting {
     const t = ctx.env.elapsed;
     const stale = t - this.lastEnvTime > 20;
     if (!force && !this.envDirty && !sunMoved && !moonMoved && !moved && !stale && weatherKey === this.lastEnvWeather) return;
+    // rate limit while time/weather animate (the PMREM is not free)
+    if (!force && !ctx.settings.shot && t - this.lastEnvTime < 0.4) return;
     this.envDirty = false;
     this.lastEnvSun.copy(ctx.env.sunDirection);
     this.lastEnvMoon.copy(this.moonDirW);

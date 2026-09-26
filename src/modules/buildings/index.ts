@@ -9,7 +9,7 @@ import type { AppContext, CityModule, StaticCollider } from '../../core/context'
 import { fetchBuffer, fetchJSON, dataUrl } from '../../core/data';
 import { parseBuildings, decodeRings, type BuildingData, Rec, REC_SIZE, R, TYP_NAMES, FLAG } from './format';
 import { floorBase, fenceEnds, type TileMesh } from './mesher';
-import { createBuildingMaterial, makeUniforms, loadNoise, type BuildingUniforms } from './material';
+import { createBuildingMaterial, makeUniforms, noiseTexture, type BuildingUniforms } from './material';
 
 export interface BuildingInfo {
   index: number;
@@ -36,6 +36,10 @@ export interface BuildingsAPI {
   footprint(i: number): Float64Array | null;
   /** Roof-top elevation at x,z if inside a building, else null. */
   roofAt(x: number, z: number): number | null;
+  /** Overture id prefix (8-4-4 hex) of building i, or '#i' before the id table is loaded. */
+  idOf(i: number): string;
+  /** Info for building index i. */
+  info(i: number): BuildingInfo | null;
   ready: Promise<void>;
 }
 
@@ -69,7 +73,13 @@ class WorkerPool {
     for (let i = 0; i < n; i++) {
       const w = new Worker(new URL('../../workers/buildings.worker.ts', import.meta.url), { type: 'module' });
       w.onmessage = (e) => this.onMessage(i, e.data);
-      w.onerror = (e) => console.error('[buildings] worker error', e.message);
+      w.onerror = (e) => {
+        console.error('[buildings] worker error', e.message);
+        // fail the jobs of this worker instead of hanging the app's ready state
+        for (const [id, job] of this.waiting) if (job.w === i) { this.waiting.delete(id); job.reject(new Error(e.message || 'worker error')); }
+        this.busy[i] = false;
+        this.pump();
+      };
       this.workers.push(w);
       this.busy.push(false);
     }
@@ -166,9 +176,6 @@ class Buildings {
   bboxes!: Float32Array; // minX, minZ, maxX, maxZ
   ids: { hi: Uint32Array; lo: Uint32Array; osm: Uint32Array; kind: Uint8Array } | null = null;
   idsPromise: Promise<void> | null = null;
-  private tmpV = new THREE.Vector3();
-  private frustum = new THREE.Frustum();
-  private projScreen = new THREE.Matrix4();
   private lastLodCheck = -1;
   private detailRadius = 450;
   private initialDone = false;
@@ -187,10 +194,12 @@ class Buildings {
     this.pool = new WorkerPool(nw);
     const url = new URL(dataUrl('buildings/buildings.bin.gz'), location.href).href;
     const [buf, meta, noise] = await Promise.all([
-      this.pool.run({ type: 'fetch', url }, () => 0).then((r) => r.buf as ArrayBuffer)
+      this.pool.run({ type: 'fetch', url }, () => 0).then((r) => { this.mark('data'); return r.buf as ArrayBuffer; })
         .catch((e) => { console.warn('[buildings] worker fetch failed, falling back', e); return fetchBuffer('buildings/buildings.bin.gz'); }),
-      fetchJSON('buildings/meta.json').catch(() => ({})),
-      loadNoise(`${import.meta.env.BASE_URL}textures/buildings/noise.png`).catch((e) => { console.warn('[buildings] noise texture', e); return null; }),
+      fetchJSON('buildings/meta.json').catch(() => ({})).then((m) => { this.mark('meta'); return m; }),
+      this.pool.run({ type: 'fetch', url: new URL(`${import.meta.env.BASE_URL}textures/buildings/noise.bin`, location.href).href }, () => 0)
+        .then((r) => { this.mark('noise'); return noiseTexture(r.buf as ArrayBuffer); })
+        .catch((e) => { console.warn('[buildings] noise texture', e); return null; }),
     ]);
     this.mark('fetched');
     this.meta = meta;
@@ -239,18 +248,18 @@ class Buildings {
     const ctx = this.ctx;
     // initial content: all base tiles (nearest first) + detail tiles around the start camera
     this.updateDetailRadius();
-    const cam = ctx.camera.position;
-    const detJobs = this.updateLod(true);
-    // base chunks sorted by distance, dealt round-robin into a few large batches (one reply each)
+    // mark the detail chunks around the start camera (no jobs yet), then send every worker ONE batch
+    // with its share of detail + base chunks, nearest first (one reply per worker = few main-thread tasks)
+    this.updateLod(true, false);
     const p = ctx.camera.position;
-    const all = [...this.base.values()].sort((a, b) => Math.hypot(a.cx - p.x, a.cz - p.z) - Math.hypot(b.cx - p.x, b.cz - p.z));
-    const nb = this.pool.size; // one reply per worker
+    const d2 = (c: Chunk) => Math.hypot(c.cx - p.x, c.cz - p.z) - (c.detail ? 1e6 : 0);
+    const all = [...this.detail.values()].filter((c) => c.wanted).concat([...this.base.values()]).sort((a, b) => d2(a) - d2(b));
+    const nb = this.pool.size;
     const batches: Chunk[][] = Array.from({ length: nb }, () => []);
     all.forEach((c, i) => batches[i % nb].push(c));
-    const baseJobs = batches.filter((b) => b.length).map((b) => this.buildBatch(b));
-    void cam;
+    const jobs = batches.filter((b) => b.length).map((b) => this.buildBatch(b));
     this.mark('queued');
-    await Promise.all([...baseJobs, ...detJobs]);
+    await Promise.all(jobs);
     this.mark('meshed');
     this.initialDone = true;
     let tris = 0;
@@ -412,7 +421,7 @@ class Buildings {
     return this.pool.run({ type: 'build', jobs }, prio)
       .then((res) => {
         const again: Chunk[] = [];
-        if (!this.initialDone) this.timing[`batch${Object.keys(this.timing).length}`] = Math.round(performance.now() - this.t0) * 1000 + Math.round(res.ms);
+        if (!this.initialDone) this.timing.workerMs = Math.max(this.timing.workerMs ?? 0, Math.round(res.ms));
         res.results.forEach((r: any, k: number) => {
           const c = cs[k];
           c.pending = false;
@@ -458,7 +467,7 @@ class Buildings {
   }
 
   // ------------------------------------------------------------------ LOD / streaming
-  updateLod(force = false): Promise<void>[] {
+  updateLod(force = false, launch = true): Promise<void>[] {
     const ctx = this.ctx;
     const p = ctx.camera.position;
     const agl = ctx.cameraAGL;
@@ -479,7 +488,7 @@ class Buildings {
         this.dropMesh(c);
       }
     }
-    if (todo.length) {
+    if (todo.length && launch) {
       // split across the workers, nearest first
       todo.sort((a, b) => dist(a) - dist(b));
       const nb = Math.min(todo.length, this.pool.size);
@@ -640,7 +649,10 @@ class Buildings {
 
   infoAt(x: number, z: number): BuildingInfo | null {
     const i = this.buildingAt(x, z);
-    if (i < 0) return null;
+    return i < 0 ? null : this.infoOf(i);
+  }
+
+  infoOf(i: number): BuildingInfo {
     const r = this.rec.at(i);
     const ni = r.nameIdx;
     const fb = floorBase(this.ground[2 * i], this.ground[2 * i + 1], r.socle);
@@ -694,6 +706,8 @@ const mod: CityModule & { inst?: Buildings } = {
       query: (x, z, r) => (b.d ? b.query(x, z, r) : []),
       footprint: (i) => (b.d && i >= 0 && i < b.d.n ? decodeRings(b.d, i)[0] : null),
       roofAt: (x, z) => (b.d ? b.roofAt(x, z) : null),
+      idOf: (i) => b.idOf(i),
+      info: (i) => (b.d && i >= 0 && i < b.d.n ? b.infoOf(i) : null),
       ready,
     } as BuildingsAPI;
     // phase 1: data, ground, index, workers -> publish the service early so that

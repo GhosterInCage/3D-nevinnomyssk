@@ -139,9 +139,16 @@ float vegIGN(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>
 ${GLSL_TRANSLUCENT}`)
-      .replace('float faceDirection = gl_FrontFacing ? 1.0 : - 1.0;', 'float faceDirection = 1.0;');
+      .replace('float faceDirection = gl_FrontFacing ? 1.0 : - 1.0;', 'float faceDirection = 1.0;')
+      .replace('#include <lights_physical_fragment>', LEAF_SPECULAR);
   }
 }
+
+/** Thin leaves: weak, non-grazing specular (no white sky-glint on crown tops seen from below). */
+export const LEAF_SPECULAR = `#include <lights_physical_fragment>
+material.specularF90 = 0.22;
+material.specularColor *= 0.6;
+material.specularColorBlended *= 0.6;`;
 
 export function makeTreeMaterials(opts: {
   leaves: boolean; map: THREE.Texture | null; normalMap?: THREE.Texture | null; color: THREE.Color;

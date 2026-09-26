@@ -63,6 +63,29 @@ function loadCloudTexture(renderer: THREE.WebGLRenderer): Promise<THREE.Texture>
   });
 }
 
+async function loadNoise3D(): Promise<THREE.Data3DTexture> {
+  const res = await fetch(`${SKY_TEX_BASE}noise3d.bin`);
+  if (!res.ok) throw new Error(`noise3d.bin ${res.status}`);
+  const data = new Uint8Array(await res.arrayBuffer());
+  const n = Math.round(Math.cbrt(data.length));
+  const t = new THREE.Data3DTexture(data, n, n, n);
+  t.format = THREE.RedFormat;
+  t.type = THREE.UnsignedByteType;
+  t.minFilter = THREE.LinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = t.wrapR = THREE.RepeatWrapping;
+  t.unpackAlignment = 1;
+  t.needsUpdate = true;
+  return t;
+}
+
+function fallbackNoise3D(): THREE.Data3DTexture {
+  const t = new THREE.Data3DTexture(new Uint8Array([128]), 1, 1, 1);
+  t.format = THREE.RedFormat;
+  t.needsUpdate = true;
+  return t;
+}
+
 function weatherFromParams(ctx: AppContext): WeatherState & { cirrus: number } {
   const p = ctx.settings.params;
   const preset = PRESETS[(p.get('weather') || '').toLowerCase()] ?? {
@@ -98,13 +121,15 @@ class SkySystem {
 
   async init(): Promise<void> {
     const ctx = this.ctx;
-    const [tex, cloudTex, stars] = await Promise.all([
+    const [tex, cloudTex, stars, noise3d] = await Promise.all([
       loadAtmosphereTextures(ctx.renderer),
       loadCloudTexture(ctx.renderer),
       loadStars().catch((e) => { console.warn('[sky] stars unavailable', e); return null; }),
+      loadNoise3D().catch((e) => { console.warn('[sky] noise3d unavailable', e); return fallbackNoise3D(); }),
     ]);
     this.cloudTex = cloudTex;
     this.uniforms = createSkyUniforms(tex, cloudTex);
+    this.uniforms.skNoise3D.value = noise3d;
     this.uniforms.skCloudP0.value.y = 1 / CLOUD_TILE;
     this.lighting = new SkyLighting(ctx, this.frame, tex, this.uniforms);
     this.patcher = new MaterialPatcher(this.uniforms);
@@ -128,6 +153,7 @@ class SkySystem {
     ctx.events.on('pipeline', (p: unknown) => {
       // keep the renderer exposure in sync for other pipelines (path tracer)
       if (p !== this.pipeline) ctx.renderer.toneMappingExposure = this.lighting.exposure;
+      else this.pipeline?.invalidate();
     });
     ctx.events.on('time', () => { this.lighting.envDirty = true; });
 
@@ -183,7 +209,7 @@ class SkySystem {
     const tau = THREE.MathUtils.lerp(12, 30, THREE.MathUtils.smoothstep(w.cloudCover, 0.4, 1.0)) * (1 + rainy * 0.8);
     u.skCloudP1.value.set(base, thick, tau, 0.55);
     u.skCloudP2.value.set(9500, w.cirrus * (1 - THREE.MathUtils.smoothstep(w.cloudCover, 0.6, 0.95)), 0.7, rainy);
-    u.skCloudP3.value.set(this.cloudSteps(), 32000, 1.0, 0.55);
+    u.skCloudP3.value.set(this.cloudSteps(), 32000, 1.0, 0.8);
     // fog: haze (fog 0.3) to thick valley fog (fog 1), plus rain haze
     const fogAmt = Math.max(w.fog, rainy * 0.45);
     const dens = fogAmt <= 0.001 ? 0 : 3.912 / THREE.MathUtils.lerp(30000, 350, Math.pow(fogAmt, 0.7));
@@ -195,6 +221,14 @@ class SkySystem {
       this.pipeline.composite.starRot.copy(this.lighting.starRot);
       this.pipeline.composite.starIntensity = this.lighting.starIntensity;
       this.pipeline.sigExtra = this.weatherKey();
+      // god rays: sun colour at the camera, strongest at low sun, faded under overcast
+      const b = this.pipeline.buffers;
+      const el = ctx.env.sunElevation;
+      const low = 1 + 2.2 * (1 - THREE.MathUtils.smoothstep(el, 4, 35));
+      const k = 0.05 * low * (1 - THREE.MathUtils.smoothstep(w.cloudCover, 0.8, 1.0)) * THREE.MathUtils.smoothstep(el, -2, 1.5);
+      const sc = ctx.env.sunColor, si = ctx.env.sunIntensity * b.godRays.visibility * k;
+      this.pipeline.atmosphere.skShaftColor.value.set(sc.r * si, sc.g * si, sc.b * si);
+      if (!b.godRaysActive && !ctx.settings.shot) this.pipeline.atmosphere.skShaftColor.value.set(0, 0, 0);
     }
     ctx.renderer.toneMappingExposure = this.lighting.exposure;
 

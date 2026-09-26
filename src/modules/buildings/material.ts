@@ -84,17 +84,15 @@ export function createBuildingMaterial(u: BuildingUniforms): THREE.MeshStandardM
   return mat;
 }
 
-/** Tileable noise texture (RGBA: low / mid / grain / streaks). */
-export function loadNoise(url: string): Promise<THREE.Texture> {
-  return new Promise((res, rej) => {
-    new THREE.TextureLoader().load(url, (t) => {
-      t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      t.colorSpace = THREE.NoColorSpace;
-      t.anisotropy = 4;
-      t.generateMipmaps = true;
-      t.minFilter = THREE.LinearMipmapLinearFilter;
-      t.magFilter = THREE.LinearFilter;
-      res(t);
-    }, undefined, rej);
-  });
+/** Tileable noise texture (RGBA: low / mid / grain / streaks) from raw 512x512 RGBA8 bytes. */
+export function noiseTexture(buf: ArrayBuffer): THREE.Texture {
+  const n = Math.round(Math.sqrt(buf.byteLength / 4));
+  const t = new THREE.DataTexture(new Uint8Array(buf), n, n, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.NoColorSpace;
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
 }

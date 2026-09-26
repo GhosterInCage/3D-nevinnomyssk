@@ -362,7 +362,10 @@ void rsSurface() {
   // ---------------------------------------------------------------- wetness
   if (wet > 0.001 && s != 12) {
     float por = (s == 3 || s == 4) ? 1.0 : 0.75;
-    float pud = smoothstep(0.58, 0.72, texture(rsNoise, xz * 0.093 + 0.4).r + 0.45 * rut - 0.15 * edge + 0.2 * (wet - 0.5));
+    // puddles: in ruts, potholes, along the curb and in low spots; far fewer on good new asphalt
+    float pn = texture(rsNoise, xz * 0.19 + 0.4).r * 0.7 + texture(rsNoise, xz * 0.047 + 0.1).b * 0.3;
+    float quality = (s == 0 || s == 10) ? 0.1 : (s == 2 ? 0.05 : 0.0);
+    float pud = smoothstep(0.7, 0.78, pn + 0.3 * rut + 0.12 * edge - quality + 0.12 * (wet - 1.0));
     if (s == 7 || s == 11) pud = 0.0;
     pud *= smoothstep(0.2, 0.7, wet);
     alb *= mix(1.0, 0.55, wet * por);
@@ -371,8 +374,8 @@ void rsSurface() {
     rough = mix(rough, 0.03, pud);
     nStr *= 1.0 - pud;
     // rain ripples
-    if (pud > 0.2) {
-      vec2 rp = xz * 3.0;
+    if (pud > 0.5) {
+      vec2 rp = xz * 2.2;
       vec2 ci = floor(rp);
       float h = rsHash(ci);
       float t = fract(rsTime * 0.9 + h);

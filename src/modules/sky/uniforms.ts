@@ -65,6 +65,7 @@ export function createSkyUniforms(tex: PrecomputedTextures, cloudTex: THREE.Text
     skTime: new THREE.Uniform(0),
 
     skCloudTex: new THREE.Uniform<THREE.Texture>(cloudTex),
+    skNoise3D: new THREE.Uniform<THREE.Texture | null>(null),
     skCloudP0: new THREE.Uniform(new THREE.Vector4(0.25, 1 / 20000, 0, 0)),
     skCloudP1: new THREE.Uniform(new THREE.Vector4(1900, 700, 16, 0.6)),
     skCloudP2: new THREE.Uniform(new THREE.Vector4(9000, 0.25, 0.6, 0)),

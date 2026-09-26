@@ -23,7 +23,7 @@ interface QualityCfg { gridN: number; nearScale: number; rangeScale: number; det
 const QCFG: Record<Quality, QualityCfg> = {
   low: { gridN: 16, nearScale: 1.0, rangeScale: 0.7, detailFar: 450, micro: false, castShadow: false, texSize: 512 },
   medium: { gridN: 32, nearScale: 1.0, rangeScale: 0.85, detailFar: 1100, micro: true, castShadow: false, texSize: 768 },
-  high: { gridN: 32, nearScale: 1.5, rangeScale: 1.0, detailFar: 1800, micro: true, castShadow: true, texSize: 1024 },
+  high: { gridN: 32, nearScale: 1.35, rangeScale: 1.0, detailFar: 1800, micro: true, castShadow: true, texSize: 1024 },
   ultra: { gridN: 64, nearScale: 1.8, rangeScale: 1.2, detailFar: 2600, micro: true, castShadow: true, texSize: 1024 },
 };
 
@@ -258,7 +258,7 @@ export class Terrain {
     cam.updateMatrixWorld();
     this.projView.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projView);
-    const shadowKeep = this.cfg.castShadow ? Math.min(ctx.settings.profile.shadowFar, 2500) : 0;
+    const shadowKeep = this.cfg.castShadow ? Math.min(ctx.settings.profile.shadowFar, 700) : 0;
     this.cdlod.select(cam.position, this.frustum, shadowKeep);
     const b = this.uniforms.uBlend.value as THREE.Vector4;
     const dd = ctx.settings.profile.drawDistance;

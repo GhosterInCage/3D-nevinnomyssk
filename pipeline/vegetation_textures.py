@@ -408,7 +408,7 @@ def main():
                           petiole=34, gloss=0.18, vary=0.12, n_leaves_per=3),
         # 1 white poplar: lobed, white undersides
         lambda: broadleaf(rng, n_side=8, leaf_len=92, leaf_w=76, shape=f_whitepoplar, col=(64, 94, 50),
-                          under=(158, 170, 150), p_under=0.3, petiole=22, vary=0.08, n_leaves_per=3),
+                          under=(126, 138, 118), p_under=0.28, petiole=22, vary=0.08, n_leaves_per=3),
         # 2 willow: long narrow grey-green leaves, drooping
         lambda: broadleaf(rng, n_side=10, leaf_len=130, leaf_w=20, shape=serrate(f_lance, 30, 0.05), col=(104, 126, 82),
                           under=(160, 172, 150), p_under=0.3, petiole=4, vary=0.1, n_leaves_per=6, droop=0.3,
