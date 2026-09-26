@@ -151,8 +151,8 @@ function crateTextures(): { map: THREE.Texture; normal: THREE.Texture; rough: TH
 
 export class Toys {
   private toys: Toy[] = [];
-  readonly balls: THREE.InstancedMesh;
-  readonly crates: THREE.InstancedMesh;
+  balls: THREE.InstancedMesh | null = null;
+  crates: THREE.InstancedMesh | null = null;
   maxBalls = 40;
   maxCrates = 30;
   private waterSvc: any = null;
@@ -160,6 +160,15 @@ export class Toys {
   private one = new THREE.Vector3(1, 1, 1);
 
   constructor(private sys: PhysicsSystem, private ctx: AppContext) {
+    sys.onPreStep((dt) => this.preStep(dt));
+    sys.onPostStep(() => this.postStep());
+    sys.addInterest((out: Interest[]) => this.interest(out));
+  }
+
+  /** Meshes + procedural textures are built on the first spawn (keeps module init light). */
+  private ensureMeshes(): void {
+    if (this.balls && this.crates) return;
+    const ctx = this.ctx;
     const ballMat = ctx.registerMaterial(new THREE.MeshPhysicalMaterial({ name: 'physics-ball', map: footballTexture(), roughness: 0.42, metalness: 0, clearcoat: 0.35, clearcoatRoughness: 0.3 }));
     const ct = crateTextures();
     const crateMat = ctx.registerMaterial(new THREE.MeshStandardMaterial({ name: 'physics-crate', map: ct.map, normalMap: ct.normal, roughnessMap: ct.rough, roughness: 1, metalness: 0 }));
@@ -174,9 +183,6 @@ export class Toys {
     }
     this.balls.name = 'physics-balls';
     this.crates.name = 'physics-crates';
-    sys.onPreStep((dt) => this.preStep(dt));
-    sys.onPostStep(() => this.postStep());
-    sys.addInterest((out: Interest[]) => this.interest(out));
   }
 
   get count(): number { return this.toys.length; }
@@ -209,6 +215,7 @@ export class Toys {
 
   private add(kind: 0 | 1, pos: THREE.Vector3, vel: THREE.Vector3, spin?: THREE.Vector3): Toy {
     const R = this.sys.R;
+    this.ensureMeshes();
     // cap: remove the oldest of this kind
     const same = this.toys.filter((t) => t.kind === kind);
     if (same.length >= (kind === 0 ? this.maxBalls : this.maxCrates)) this.remove(same[0]);
@@ -318,16 +325,18 @@ export class Toys {
 
   /** Update instance matrices (interpolated). */
   render(alpha: number): void {
+    const balls = this.balls, crates = this.crates;
+    if (!balls || !crates) return;
     let nb = 0, nc = 0;
     const p = new THREE.Vector3(), q = new THREE.Quaternion();
     for (const t of this.toys) {
       p.copy(t.prevP).lerp(t.curP, alpha);
       q.copy(t.prevQ).slerp(t.curQ, alpha);
       this.m4.compose(p, q, this.one);
-      if (t.kind === 0) this.balls.setMatrixAt(nb++, this.m4);
-      else this.crates.setMatrixAt(nc++, this.m4);
+      if (t.kind === 0) balls.setMatrixAt(nb++, this.m4);
+      else crates.setMatrixAt(nc++, this.m4);
     }
-    if (this.balls.count !== nb || nb) { this.balls.count = nb; this.balls.instanceMatrix.needsUpdate = true; }
-    if (this.crates.count !== nc || nc) { this.crates.count = nc; this.crates.instanceMatrix.needsUpdate = true; }
+    if (balls.count !== nb || nb) { balls.count = nb; balls.instanceMatrix.needsUpdate = true; }
+    if (crates.count !== nc || nc) { crates.count = nc; crates.instanceMatrix.needsUpdate = true; }
   }
 }

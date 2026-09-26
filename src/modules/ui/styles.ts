@@ -185,6 +185,17 @@ export const CSS = /* css */ `
 .nv-mode .nv-badge { position: absolute; top: -6px; right: -4px; font: 600 9.5px/1 ui-monospace, monospace; padding: 3px 5px; border-radius: 6px; background: #ffb547; color: #1a1205; }
 .nv-mode kbd { font: 10px/1 ui-monospace, monospace; opacity: .45; margin-left: 2px; }
 
+/* keep clear of the physics HUD: key hint (bottom centre, ~5 s after a mode switch) and the drive dashboard (bottom right) */
+.nv-modes, .nv-status, .nv-attrib { transition: bottom .3s ease; }
+.nv-ui.nv-lift-modes .nv-modes { bottom: calc(var(--nv-gap) + 44px); }
+.nv-ui.nv-lift-status .nv-status { bottom: calc(22px + 188px + 10px); }
+.nv-ui.nv-lift-status .nv-attrib { display: none; } /* attribution stays in the help overlay */
+
+/* photo mode (path tracer overlay at the top centre): no labels, markers or location pill over the render */
+.nv-ui.nv-photo .nv-labels, .nv-ui.nv-photo .nv-loc, .nv-ui.nv-photo .nv-marker,
+.nv-ui.nv-photo .nv-tl, .nv-ui.nv-photo .nv-mm { opacity: 0 !important; pointer-events: none !important; transition: opacity .25s; }
+.nv-ui.nv-photo .nv-toasts { top: 150px; }
+
 /* ------------------------------------------------------------------ bottom-right: status */
 .nv-status { position: absolute; right: var(--nv-gap); bottom: var(--nv-gap); padding: 7px 12px; border-radius: 11px; font: 11.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
   color: #cfdae5; text-align: right; font-variant-numeric: tabular-nums; }
@@ -243,6 +254,7 @@ export const CSS = /* css */ `
   text-shadow: 0 0 2px rgba(0,0,0,.9), 0 1px 6px rgba(0,0,0,.85), 0 0 18px rgba(0,0,0,.5); flex-direction: column; gap: 0; }
 .nv-lbl.nv-area .nv-lbl-b small { font-size: 9.5px; letter-spacing: .12em; font-weight: 600; color: #d6e2ee; opacity: .85; }
 .nv-lbl.nv-area.nv-r2 .nv-lbl-b { font-size: 12.5px; }
+.nv-lbl.nv-k-city .nv-lbl-b { font-size: 24px; font-weight: 750; letter-spacing: .3em; color: #fff4dc; }
 .nv-lbl.nv-area.nv-r3 .nv-lbl-b { font-size: 11px; }
 .nv-lbl.nv-street .nv-lbl-b { transform: translate(-50%, 50%); background: rgba(250, 252, 255, .88); color: #1d2733; border: 0; padding: 2px 8px; font-size: 11px; font-weight: 600;
   box-shadow: 0 1px 4px rgba(0,0,0,.35); backdrop-filter: none; -webkit-backdrop-filter: none; border-radius: 5px; }
@@ -308,6 +320,8 @@ export const CSS = /* css */ `
   .nv-bigmap-hint { display: none; }
   .nv-toasts { top: 104px; }
   .nv-card { max-height: 42vh; overflow: auto; }
+  .nv-loc { transition: bottom .3s ease; }
+  .nv-ui.nv-lift-modes .nv-loc { bottom: calc(64px + 44px); }
 }
 @media (max-width: 720px) and (min-height: 521px) {
   .nv-tl .nv-card { position: fixed; left: 10px; right: 10px; bottom: 62px; top: auto; z-index: 25; }

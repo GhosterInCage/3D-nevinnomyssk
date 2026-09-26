@@ -405,6 +405,40 @@ else:
     np.savez(CACHE, dist_bld=dist_bld, dist_hard=dist_hard)
     log("EDT done")
 
+# --- surfaces exactly as the roads module draws them (sidewalks, paving, parking, ballast, carriageways)
+import vegetation_roads  # noqa: E402
+RS = vegetation_roads.rasterise(FR, NF, H)
+if RS is not None:
+    M_rpav = RS["paving"]
+    M_rhard = RS["carriage"] | RS["walk"] | RS["parking"] | RS["rail"]
+    log("roads-module surfaces (km2)", {k: round(float(v.sum()) * FR * FR / 1e6, 2) for k, v in RS.items()},
+        "overlap with own carriageways", round(float((RS["carriage"] & M_carr).sum()) / max(1, float(RS["carriage"].sum())), 2))
+    RCACHE = f"{PROC}/veg_cache_roads.npz"
+    rmt = vegetation_roads.source_mtime()
+    _rc = np.load(RCACHE) if os.path.exists(RCACHE) else None
+    if _rc is not None and float(_rc["mtime"]) == rmt:
+        dist_paved, dist_in_pav = _rc["dist_paved"], _rc["dist_in_pav"]
+        log("roads EDT from cache")
+    else:
+        log("EDT roads-module surfaces…")
+        dist_paved = (ndimage.distance_transform_edt(~(M_rhard | M_rpav)) * FR).astype(np.float16)
+        dist_in_pav = (ndimage.distance_transform_edt(M_rpav) * FR).astype(np.float16)
+        np.savez(RCACHE, dist_paved=dist_paved, dist_in_pav=dist_in_pav, mtime=np.float64(rmt))
+    del _rc
+else:
+    log("roads data missing: using own road rasters only")
+    M_rpav = np.zeros((NF, NF), bool)
+    M_rhard = np.zeros((NF, NF), bool)
+    dist_paved = np.full((NF, NF), 100, np.float16)
+    dist_in_pav = np.zeros((NF, NF), np.float16)
+
+
+def paved_ok(jb, ib, clear):
+    """Trunk clearance from rendered sidewalks / parking / ballast; trees may stand deep inside
+    paved squares (in tree pits), not on sidewalks."""
+    dp = dist_paved[jb, ib].astype(np.float32)
+    return (dp >= clear) | (M_rpav[jb, ib] & (dist_in_pav[jb, ib].astype(np.float32) >= 3.5) & (dist_hard[jb, ib].astype(np.float32) >= 2.5))
+
 # ----------------------------------------------------------------------------- blue-noise ranked pattern
 
 
@@ -531,7 +565,7 @@ jb, ib = fine_idx(tx, ty)
 db = dist_bld[jb, ib].astype(np.float32)
 dhd = dist_hard[jb, ib].astype(np.float32)
 onpath = M_path[jb, ib]
-ok = (dhd >= 1.6) & (db >= np.clip(0.26 * tw, 1.8, 4.0)) & ~onpath & ~M_rail[jb, ib]
+ok = (dhd >= 1.6) & (db >= np.clip(0.26 * tw, 1.8, 4.0)) & ~onpath & ~M_rail[jb, ib] & paved_ok(jb, ib, 0.9)
 # trees very close to buildings are smaller / narrower
 tw = np.where(db < 0.5 * tw, np.maximum(db * 1.8, tw * 0.6), tw)
 tx, ty, tz, tsp, th, tw = tx[ok], ty[ok], tz[ok], tsp[ok], th[ok], tw[ok]
@@ -581,7 +615,27 @@ for cl, w, g, r in road_list:
             t = pts2 - pts1
             t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-6)
             nrm = np.column_stack([-t[:, 1], t[:, 0]]) * side
-            o = off + (srng.uniform(-1.0, 1.0, n) if is_private else srng.uniform(-0.25, 0.25, n))
+            if RS is not None:
+                # the row goes where the rendered cross-section has soil: the verge strip between the
+                # carriageway and the sidewalk, or the lawn beyond the sidewalk (never on the pavement)
+                cands = w / 2 + np.array([0.9, 1.2, 1.6, 2.1, 2.8, 3.6, 4.5, 5.5, 6.5, 7.6])
+                if is_private:
+                    cands = w / 2 + np.array([1.5, 2.0, 2.6, 3.3, 4.0, 5.0])
+                fr_ok = []
+                for oc in cands:
+                    q = pts + nrm * oc
+                    jq, iq = fine_idx(q[:, 0], q[:, 1])
+                    okq = (dist_paved[jq, iq].astype(np.float32) >= 0.6) & (dist_hard[jq, iq].astype(np.float32) >= 0.8) & \
+                          (dist_bld[jq, iq].astype(np.float32) >= 2.0)
+                    fr_ok.append(okq.mean())
+                fr_ok = np.array(fr_ok)
+                good = np.nonzero(fr_ok >= 0.5)[0]
+                if len(good) == 0:
+                    continue
+                # prefer the nearest workable row; sometimes the outer one (trees behind the sidewalk)
+                pick_i = good[0] if (srng.random() < 0.65 or len(good) == 1) else good[min(len(good) - 1, 1 + int(srng.random() * 2))]
+                off = cands[pick_i]
+            o = off + (srng.uniform(-1.0, 1.0, n) if is_private else srng.uniform(-0.2, 0.2, n))
             p = pts + nrm * o[:, None]
             ev = np.maximum(bilinear(tree10, p[:, 0], p[:, 1]), smoothstep(0.33, 0.6, bilinear(ndvi, p[:, 0], p[:, 1])))
             acc = srng.random(n) < p_base * ev ** 0.8
@@ -598,7 +652,8 @@ for cl, w, g, r in road_list:
             jb, ib = fine_idx(p[:, 0], p[:, 1])
             db = dist_bld[jb, ib].astype(np.float32)
             dhd = dist_hard[jb, ib].astype(np.float32)
-            ok = acc & (dhd >= 1.3) & (db >= np.clip(0.3 * ws, 2.0, 4.5)) & ~M_path[jb, ib] & ~M_rail[jb, ib]
+            ok = acc & (dhd >= 1.3) & (db >= np.clip(0.3 * ws, 2.0, 4.5)) & ~M_path[jb, ib] & ~M_rail[jb, ib] & \
+                paved_ok(jb, ib, 0.55)
             if ok.any():
                 stx.append(p[ok, 0]); sty.append(p[ok, 1]); stsp.append(sp[ok])
                 sth.append(hs[ok]); stw.append(ws[ok])
@@ -623,6 +678,7 @@ for cl, w, g, r in road_list:
                         jb2, ib2 = fine_idx(samp[:3, 0], samp[:3, 1])
                         nd = bilinear(ndvi, np.array([c[0]]), np.array([c[1]]))[0]
                         if nd > 0.3 and (dist_hard[jb2, ib2].astype(np.float32) >= 0.8).all() \
+                                and (dist_paved[jb2, ib2].astype(np.float32) >= 0.5).all() \
                                 and (dist_bld[jb2, ib2].astype(np.float32) >= 1.5).all() and not M_path[jb2, ib2].any():
                             hx.append(c[0]); hy.append(c[1]); hl.append(ln); hh.append(seg_h)
                             hrot.append(math.atan2(tt[1], tt[0]))
@@ -684,7 +740,7 @@ for mn in np.unique(mixname):
 sh, sw = species_dims(ssp, sz, RNG.random(len(sx)), RNG.random(len(sx)), np.ones(len(sx)))
 jb, ib = fine_idx(sx, sy)
 ok = (dist_hard[jb, ib].astype(np.float32) >= 0.9) & (dist_bld[jb, ib].astype(np.float32) >= 1.2) & \
-     ~M_path[jb, ib] & ~M_side[jb, ib] & ~M_rail[jb, ib]
+     ~M_path[jb, ib] & ~M_side[jb, ib] & ~M_rail[jb, ib] & (dist_paved[jb, ib].astype(np.float32) >= 0.8)
 # away from tree trunks
 alltrees = np.column_stack([np.concatenate([tx, stx]), np.concatenate([ty, sty])])
 kd = cKDTree(alltrees)
@@ -732,19 +788,31 @@ log("wrote trees.bin.gz", N, os.path.getsize(os.path.join(OUT, "trees.bin.gz")) 
 
 # ----------------------------------------------------------------------------- ground cover (10 m)
 log("cover…")
-r_, g_, b_ = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-bright = (r_ + g_ + b_) / 3
-yellow = smoothstep(0.0, 0.05, r_ - b_) * smoothstep(0.02, 0.1, bright)
+# no-grow mask (2 m): buildings, carriageways + sidewalks, footways, rail beds, water
+if RS is not None:
+    # exactly what the roads module paves (its sidewalks exist only where it draws them, so grass
+    # verges along private-sector streets survive) + own carriageway / rail rasters as a safety margin
+    nog = M_bld | M_path | M_water | M_rhard | M_rpav | M_carr | (M_rail & M_side)
+else:
+    nog = M_bld | M_side | M_path | M_water
+# Spectral unmixing of the 10 m NDVI: a built-up pixel is a mix of paved/roofed surface (NDVI ~0.08)
+# and the open ground between them. The fraction that is not paved is known from the 2 m masks, so the
+# NDVI of the open part (the lawn the grass grows on) is (ndvi - (1-f) * ndvi_paved) / f.
+f_free = 1.0 - nog.reshape(N10, 5, N10, 5).mean(axis=(1, 3), dtype=np.float32)
+NDVI_PAVED = 0.08
+ndvi_u = (ndvi - (1.0 - f_free) * NDVI_PAVED) / np.maximum(f_free, 0.3)
+ndvi_u = np.clip(np.maximum(ndvi_u, ndvi), -1.0, np.maximum(ndvi, 0.8)).astype(np.float32)
+log("unmixed NDVI in built cells: mean", float(ndvi[wc == 50].mean()), "->", float(ndvi_u[wc == 50].mean()))
 dens = np.zeros((N10, N10), np.float32)
 ctype = np.zeros((N10, N10), np.uint8)
-dry = smoothstep(0.72, 0.30, ndvi)
-hfac = 0.7 + 0.6 * smoothstep(0.3, 0.8, ndvi)
+dry = smoothstep(0.72, 0.30, ndvi_u)
+hfac = 0.7 + 0.6 * smoothstep(0.3, 0.8, ndvi_u)
 m = wc == 30
 dens[m] = 0.55 + 0.45 * smoothstep(0.25, 0.65, ndvi[m]); ctype[m] = 1
 m = wc == 10
 dens[m] = 0.42 + 0.43 * smoothstep(0.3, 0.7, ndvi[m]); ctype[m] = 1
 m = wc == 50
-dens[m] = 0.95 * smoothstep(0.17, 0.42, ndvi[m]); ctype[m] = 0
+dens[m] = 0.95 * smoothstep(0.17, 0.42, ndvi_u[m]); ctype[m] = 0
 m = wc == 60
 dens[m] = 0.25 * smoothstep(0.15, 0.5, ndvi[m]); ctype[m] = 1
 m = wc == 90
@@ -774,8 +842,6 @@ log("cover.jpg", os.path.getsize(os.path.join(OUT, "cover.jpg")) // 1024, "KB", 
     os.path.getsize(os.path.join(OUT, "covertype.png")) // 1024, "KB", {t: int((ctype == t).sum()) for t in range(6)})
 
 # ----------------------------------------------------------------------------- no-grow mask (2 m)
-nog = M_bld | M_side | M_path | M_water
-jr = M_rail & M_side  # rail beds already in M_side (5 m)
 bits = np.packbits(nog, axis=1)
 with gzip.open(os.path.join(OUT, "nogrow.bin.gz"), "wb", compresslevel=9) as f:
     f.write(bits.tobytes())

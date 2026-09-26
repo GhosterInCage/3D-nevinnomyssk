@@ -2,7 +2,7 @@
 // injected with onBeforeCompile (chain-safe: other modules such as CSM may
 // assign their own onBeforeCompile later; both run).
 import * as THREE from 'three';
-import { VERT_PARS, VERT_MAIN, FRAG_PARS, FRAG_SURFACE } from './shader';
+import { VERT_PARS, VERT_MAIN, FRAG_PARS, FRAG_SURFACE, LAMP_FN } from './shader';
 
 export interface BuildingUniforms {
   uNoise: { value: THREE.Texture | null };
@@ -15,6 +15,9 @@ export interface BuildingUniforms {
   uGroundRefl: { value: THREE.Color };
   uDetail: { value: number };
   uDetailDist: { value: number };
+  /** ground height field (R32F, see HeightField.texture) + (half, res, n): street-lamp lighting */
+  bHF: { value: THREE.Texture | null };
+  bHFP: { value: THREE.Vector3 };
 }
 
 export function makeUniforms(): BuildingUniforms {
@@ -29,6 +32,8 @@ export function makeUniforms(): BuildingUniforms {
     uGroundRefl: { value: new THREE.Color(0.12, 0.12, 0.11) },
     uDetail: { value: 1 },
     uDetailDist: { value: 400 },
+    bHF: { value: null },
+    bHFP: { value: new THREE.Vector3(10240, 10, 2049) },
   };
 }
 
@@ -59,8 +64,8 @@ export function chainOnBeforeCompile(mat: THREE.Material, mine: OBC, key: string
   mat.customProgramCacheKey = () => `${key}|${prevKey()}`;
 }
 
-function patch(shader: THREE.WebGLProgramParametersWithUniforms, u: BuildingUniforms): void {
-  Object.assign(shader.uniforms, u);
+function patch(shader: THREE.WebGLProgramParametersWithUniforms, u: BuildingUniforms, extra: Record<string, THREE.IUniform>): void {
+  Object.assign(shader.uniforms, u, extra);
   let vs = shader.vertexShader;
   vs = vs.replace('#include <common>', `#include <common>\n${VERT_PARS}`);
   vs = vs.replace('#include <project_vertex>', `#include <project_vertex>\n${VERT_MAIN}`);
@@ -73,15 +78,34 @@ function patch(shader: THREE.WebGLProgramParametersWithUniforms, u: BuildingUnif
   fs = fs.replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n  metalnessFactor = bMetal;`);
   fs = fs.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n  normal = normalize((viewMatrix * vec4(bN, 0.0)).xyz);`);
   fs = fs.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n  totalEmissiveRadiance += bEmis;`);
+  fs = fs.replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${LAMP_FN}`);
+  fs = fs.replace('#include <lights_fragment_end>', `#ifdef BLD_LAMPS\n  bLamps(reflectedLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material);\n#endif\n#include <lights_fragment_end>`);
   fs = fs.replace('#include <aomap_fragment>', `#include <aomap_fragment>\n  reflectedLight.indirectDiffuse *= bAO;\n  reflectedLight.indirectSpecular *= mix(1.0, bAO, 0.5);`);
   shader.fragmentShader = fs;
 }
 
-export function createBuildingMaterial(u: BuildingUniforms): THREE.MeshStandardMaterial {
+export function createBuildingMaterial(u: BuildingUniforms, extra: Record<string, THREE.IUniform> = {}): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0.0, envMapIntensity: 1.0 });
   mat.name = 'buildings';
-  chainOnBeforeCompile(mat, (shader) => patch(shader, u), 'nev-buildings-v1');
+  chainOnBeforeCompile(mat, (shader) => patch(shader, u, extra), 'nev-buildings-v2');
   return mat;
+}
+
+/**
+ * Street-lamp light on facades at night: share the roads module's lamp grid
+ * (roads.lampMap / roads.uniforms, see src/modules/roads/materials.ts rsLamps)
+ * and switch the BLD_LAMPS variant on. Returns false if the roads service lacks it.
+ */
+export function enableStreetLamps(mat: THREE.MeshStandardMaterial, extra: Record<string, THREE.IUniform>, roads: any): boolean {
+  const ru = roads?.uniforms;
+  if (!ru?.rsLamp || !ru.rsLampP) return false;
+  for (const k of ['rsLamp', 'rsLampP', 'rsLampCol0', 'rsLampCol1', 'rsLampI', 'rsReal']) {
+    if (!ru[k]) return false;
+    extra[k] = ru[k];
+  }
+  mat.defines = { ...(mat.defines ?? {}), BLD_LAMPS: 1 };
+  mat.needsUpdate = true;
+  return true;
 }
 
 /** Tileable noise texture (RGBA: low / mid / grain / streaks) from raw 512x512 RGBA8 bytes. */

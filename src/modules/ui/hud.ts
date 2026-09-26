@@ -29,6 +29,60 @@ function compassSvg(): string {
     <path d="M32 11.5 34.5 15.5h-5z" fill="#7cc4ff"/></svg>`;
 }
 
+/**
+ * Nearest *named* street (the roads service's nearest() returns the nearest drivable edge, which is
+ * often an unnamed service road / yard). Built lazily from roads.graph.edges.
+ */
+class StreetIndex {
+  private cell = 80;
+  private grid = new Map<number, number[]>();
+  private segs: Float32Array;          // ax, az, bx, bz per segment
+  private segName: string[] = [];
+  constructor(edges: Array<{ cls: string; name?: string; points: Float32Array }>) {
+    const tmp: number[] = [];
+    const SKIP = new Set(['footway', 'path', 'steps', 'cycleway', 'track', 'rail', 'standard_gauge', 'narrow_gauge', 'tram', 'subway']);
+    for (const e of edges) {
+      if (!e.name || SKIP.has(e.cls)) continue;
+      const p = e.points;
+      for (let k = 0; k + 3 < p.length; k += 2) {
+        const i = tmp.length / 4;
+        tmp.push(p[k], p[k + 1], p[k + 2], p[k + 3]);
+        this.segName.push(e.name);
+        const x0 = Math.floor(Math.min(p[k], p[k + 2]) / this.cell), x1 = Math.floor(Math.max(p[k], p[k + 2]) / this.cell);
+        const z0 = Math.floor(Math.min(p[k + 1], p[k + 3]) / this.cell), z1 = Math.floor(Math.max(p[k + 1], p[k + 3]) / this.cell);
+        for (let gz = z0; gz <= z1; gz++) for (let gx = x0; gx <= x1; gx++) {
+          const key = (gz + 512) * 1024 + (gx + 512);
+          let a = this.grid.get(key);
+          if (!a) this.grid.set(key, (a = []));
+          a.push(i);
+        }
+      }
+    }
+    this.segs = new Float32Array(tmp);
+  }
+
+  nearest(x: number, z: number, maxDist: number): { name: string; dist: number } | null {
+    const c = this.cell, s = this.segs;
+    const r = Math.ceil(maxDist / c);
+    const cx = Math.floor(x / c), cz = Math.floor(z / c);
+    let best = -1, bd = maxDist * maxDist;
+    for (let gz = cz - r; gz <= cz + r; gz++) for (let gx = cx - r; gx <= cx + r; gx++) {
+      const a = this.grid.get((gz + 512) * 1024 + (gx + 512));
+      if (!a) continue;
+      for (const i of a) {
+        const ax = s[4 * i], az = s[4 * i + 1], dx = s[4 * i + 2] - ax, dz = s[4 * i + 3] - az;
+        const L2 = dx * dx + dz * dz;
+        let t = L2 > 0 ? ((x - ax) * dx + (z - az) * dz) / L2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const ex = ax + dx * t - x, ez = az + dz * t - z;
+        const d2 = ex * ex + ez * ez;
+        if (d2 < bd) { bd = d2; best = i; }
+      }
+    }
+    return best >= 0 ? { name: this.segName[best], dist: Math.sqrt(bd) } : null;
+  }
+}
+
 export class Hud {
   readonly compass: HTMLDivElement;
   readonly status: HTMLDivElement;
@@ -38,6 +92,7 @@ export class Hud {
   private timer = 0;
   private locTimer = 0;
   private lastHeading = NaN;
+  private streets: StreetIndex | null = null;
 
   constructor(private ctx: AppContext, private flight: CameraFlight, private gz: Gazetteer, tr: HTMLElement, root: HTMLElement) {
     this.hdEl = h('div', { class: 'nv-hd' });
@@ -98,7 +153,13 @@ export class Hud {
   locationAt(x: number, z: number, agl: number): { street?: string; area?: string } {
     const out: { street?: string; area?: string } = {};
     const roads = this.ctx.get<any>('roads');
-    if (roads?.nearest && agl < 700) {
+    if (!this.streets && roads?.graph?.edges) {
+      try { this.streets = new StreetIndex(roads.graph.edges); } catch (e) { console.warn('[ui] street index', e); this.streets = null; }
+    }
+    if (this.streets && agl < 700) {
+      const r = this.streets.nearest(x, z, Math.max(70, Math.min(250, agl * 0.8)));
+      if (r) out.street = getLang() === 'ru' ? r.name : latinName(r.name);
+    } else if (roads?.nearest && agl < 700) {
       try {
         const r = roads.nearest(x, z, Math.max(60, Math.min(250, agl * 0.8)));
         if (r?.name) out.street = getLang() === 'ru' ? r.name : latinName(r.name);

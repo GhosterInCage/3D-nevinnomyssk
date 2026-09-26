@@ -33,7 +33,8 @@ export function uvRear(x: number, y: number): [number, number] {
   return [r.u0 + (r.u1 - r.u0) * (x - r.x0) / (r.x1 - r.x0), r.v0 + (r.v1 - r.v0) * (y - r.y0) / (r.y1 - r.y0)];
 }
 
-interface Mat { albedo: string; cc: number; rough: number; metal: number; h: number }
+/** Paint layer: albedo, clearcoat / roughness / metalness, height (normal map), and `glass` = see-through. */
+interface Mat { albedo: string; cc: number; rough: number; metal: number; h: number; glass?: boolean }
 
 function hexToRgb(h: string): [number, number, number] {
   const c = new THREE.Color(h);
@@ -48,16 +49,22 @@ class Painter {
   readonly a: CanvasRenderingContext2D;
   readonly m: CanvasRenderingContext2D;
   readonly h: CanvasRenderingContext2D;
+  /** opacity mask of the body shell: white = sheet metal / trim, black = glass (cut out) */
+  readonly k: CanvasRenderingContext2D;
   readonly ca: HTMLCanvasElement;
   readonly cm: HTMLCanvasElement;
   readonly ch: HTMLCanvasElement;
+  readonly ck: HTMLCanvasElement;
 
   constructor(readonly N: number) {
     const mk = () => { const c = document.createElement('canvas'); c.width = c.height = N; return c; };
-    this.ca = mk(); this.cm = mk(); this.ch = mk();
+    this.ca = mk(); this.cm = mk(); this.ch = mk(); this.ck = mk();
     this.a = this.ca.getContext('2d')!;
     this.m = this.cm.getContext('2d')!;
     this.h = this.ch.getContext('2d')!;
+    this.k = this.ck.getContext('2d')!;
+    this.k.fillStyle = '#fff';
+    this.k.fillRect(0, 0, N, N);
   }
 
   px(uv: [number, number]): [number, number] { return [uv[0] * this.N, (1 - uv[1]) * this.N]; }
@@ -67,9 +74,10 @@ class Painter {
     this.m.fillStyle = this.m.strokeStyle = `rgb(${Math.round(m.cc * 255)},${Math.round(m.rough * 255)},${Math.round(m.metal * 255)})`;
     const hv = Math.round(m.h * 255);
     this.h.fillStyle = this.h.strokeStyle = `rgb(${hv},${hv},${hv})`;
+    this.k.fillStyle = this.k.strokeStyle = m.glass ? '#000' : '#fff';
   }
 
-  private each(fn: (g: CanvasRenderingContext2D) => void): void { fn(this.a); fn(this.m); fn(this.h); }
+  private each(fn: (g: CanvasRenderingContext2D) => void): void { fn(this.a); fn(this.m); fn(this.h); fn(this.k); }
 
   rect(x0: number, y0: number, x1: number, y1: number, m: Mat): void {
     this.style(m);
@@ -108,7 +116,10 @@ class Painter {
   }
 }
 
-export interface BodyTextures { map: THREE.Texture; orm: THREE.Texture; normal: THREE.Texture }
+export interface BodyTextures { map: THREE.Texture; orm: THREE.Texture; normal: THREE.Texture; cut: THREE.Texture; glass: THREE.Texture }
+
+/** Atlas texel that is always cut out: the lower body's top face inside the cabin maps here. */
+export const HOLE_UV: [number, number] = [0.95, 0.01];
 
 /** Paint the body atlas for a given paint colour (sRGB hex). */
 export function paintBodyAtlas(paint: string): BodyTextures {
@@ -116,7 +127,7 @@ export function paintBodyAtlas(paint: string): BodyTextures {
   const P = new Painter(N);
   const pc = hexToRgb(paint);
   const PAINT: Mat = { albedo: paint, cc: 1, rough: 0.34, metal: 0.55, h: 1 };
-  const GLASS: Mat = { albedo: '#07090b', cc: 1, rough: 0.03, metal: 0.0, h: 1 };
+  const GLASS: Mat = { albedo: '#07090b', cc: 1, rough: 0.03, metal: 0.0, h: 1, glass: true };
   const PLASTIC: Mat = { albedo: '#141517', cc: 0.05, rough: 0.6, metal: 0, h: 0.85 };
   const CHROME: Mat = { albedo: '#d9dcdf', cc: 0, rough: 0.12, metal: 1, h: 1 };
   const GAP: Mat = { albedo: rgbStr([pc[0] * 0.18, pc[1] * 0.18, pc[2] * 0.18]), cc: 0.2, rough: 0.6, metal: 0.1, h: 0 };
@@ -127,8 +138,9 @@ export function paintBodyAtlas(paint: string): BodyTextures {
   const RED_REFLEX: Mat = { albedo: '#7a0c0c', cc: 1, rough: 0.15, metal: 0, h: 1 };
 
   P.rect(0, 0, N, N, PAINT);
-  // underside strip
+  // underside strip, with a see-through patch at its end (HOLE_UV: open top of the cabin tub)
   P.rect(0, (1 - REGION.under.v1) * N, N, N, UNDER);
+  P.rect(0.9 * N, (1 - REGION.under.v1) * N, N, N, { ...UNDER, glass: true });
 
   const S = (z: number, y: number) => P.px(uvSide(z, y));
   const T = (z: number, x: number) => P.px(uvTop(z, x));
@@ -160,6 +172,15 @@ export function paintBodyAtlas(paint: string): BodyTextures {
     }
     for (let z = zB; z <= zF; z += 0.05) dlo.push(S(z, belt(z) + 0.012));
     P.poly(dlo, GLASS);
+    // B-pillar (black trim) and the rear door's fixed-glass divider bar
+    const pillar = (zc: number, w: number, m: Mat) => {
+      const pts: Array<[number, number]> = [];
+      for (let k = 0; k <= 6; k++) { const z = zc - w / 2 + (w * k) / 6; pts.push(S(z, roofRail(z) - 0.01)); }
+      for (let k = 6; k >= 0; k--) { const z = zc - w / 2 + (w * k) / 6 + 0.02; pts.push(S(z, belt(z) + 0.004)); }
+      P.poly(pts, m);
+    };
+    pillar(-0.265, 0.085, PLASTIC);
+    pillar(-1.02, 0.022, RUBBER);
     // rubber window seal along the belt
     const seal: Array<[number, number]> = [];
     for (let z = zB; z <= zF + 0.001; z += 0.05) seal.push(S(z, belt(z) + 0.006));
@@ -233,12 +254,15 @@ export function paintBodyAtlas(paint: string): BodyTextures {
     const nose = 2.04;
     for (let x = halfWidth(nose) * 0.84; x >= -halfWidth(nose) * 0.84; x -= 0.05) hood.push(T(nose + 0.03 * (1 - (x / 0.8) ** 2), x));
     for (let z = 2.02; z >= GH.zWS + 0.07; z -= 0.05) hood.push(T(z, -halfWidth(z) * 0.845));
-    P.line(hood, gapW, GAP);
+    // shut lines on the shoulders are seen at a grazing angle of the top projection (stretched):
+    // keep them thin and less contrasty than the vertical gaps
+    const SHUT: Mat = { ...GAP, albedo: rgbStr([pc[0] * 0.4, pc[1] * 0.4, pc[2] * 0.4]), h: 0.3 };
+    P.line(hood, Math.max(1.5, gapW * 0.55), SHUT);
     // trunk lid outline
     const lid: Array<[number, number]> = [];
     for (let z = GH.zRB - 0.02; z >= -2.13; z -= 0.05) lid.push(T(z, halfWidth(z) * 0.78));
     for (let z = -2.13; z <= GH.zRB - 0.02; z += 0.05) lid.push(T(z, -halfWidth(z) * 0.78));
-    P.line(lid, gapW, GAP);
+    P.line(lid, Math.max(1.5, gapW * 0.55), SHUT);
     P.line([T(GH.zRB - 0.02, halfWidth(GH.zRB) * 0.78), T(GH.zRB - 0.02, -halfWidth(GH.zRB) * 0.78)], gapW, GAP);
     // rear bumper top / trunk lip
     // roof antenna base
@@ -296,20 +320,52 @@ export function paintBodyAtlas(paint: string): BodyTextures {
     P.roundRect(...Rr(0.3, 0.80), ...Rr(0.52, 0.782), 2, CHROME); // model badge
   }
 
+  // ------------------------------------------------------------------ road dust
+  // a daily-driven car on the dusty roads of the Stavropol steppe: a light brown film low on the
+  // flanks and bumpers (less clearcoat, rougher), fading out towards the beltline
+  {
+    const dust = (y0px: number, y1px: number, x0px: number, x1px: number, amount: number) => {
+      const ga = P.a.createLinearGradient(0, y0px, 0, y1px);
+      ga.addColorStop(0, `rgba(122,104,80,${amount})`); ga.addColorStop(1, 'rgba(122,104,80,0)');
+      P.a.fillStyle = ga; P.a.fillRect(x0px, Math.min(y0px, y1px), x1px - x0px, Math.abs(y1px - y0px));
+      const gm = P.m.createLinearGradient(0, y0px, 0, y1px);
+      gm.addColorStop(0, `rgba(30,215,40,${amount * 1.6})`); gm.addColorStop(1, 'rgba(30,215,40,0)');
+      P.m.fillStyle = gm; P.m.fillRect(x0px, Math.min(y0px, y1px), x1px - x0px, Math.abs(y1px - y0px));
+    };
+    const sideBot = S(0, 0.12)[1], sideTop = S(0, 0.62)[1];
+    dust(sideBot, sideTop, 0, N, 0.32);
+    const fb = F(0, 0.18)[1], ft = F(0, 0.5)[1];
+    dust(fb, ft, REGION.front.u0 * N, REGION.front.u1 * N, 0.26);
+    const rb = Rr(0, 0.18)[1], rt = Rr(0, 0.55)[1];
+    dust(rb, rt, REGION.rear.u0 * N, REGION.rear.u1 * N, 0.3);
+  }
+
   // ------------------------------------------------------------------ build textures
   const map = new THREE.CanvasTexture(P.ca);
   map.colorSpace = THREE.SRGBColorSpace;
   const orm = new THREE.CanvasTexture(P.cm);
   orm.colorSpace = THREE.NoColorSpace;
   const normal = heightToNormal(P.ch, 2.5);
-  for (const t of [map, orm, normal]) {
+  const cut = new THREE.CanvasTexture(P.ck);
+  cut.colorSpace = THREE.NoColorSpace;
+  const gc = document.createElement('canvas');
+  gc.width = gc.height = N;
+  const gg = gc.getContext('2d')!;
+  const kd = P.k.getImageData(0, 0, N, N);
+  for (let i = 0; i < kd.data.length; i += 4) { const v = 255 - kd.data[i + 1]; kd.data[i] = kd.data[i + 1] = kd.data[i + 2] = v; kd.data[i + 3] = 255; }
+  gg.putImageData(kd, 0, 0);
+  gg.fillStyle = '#000';
+  gg.fillRect(0.88 * N, (1 - REGION.under.v1) * N - 2, 0.12 * N, REGION.under.v1 * N + 2); // the cabin hole is not glass
+  const glass = new THREE.CanvasTexture(gc);
+  glass.colorSpace = THREE.NoColorSpace;
+  for (const t of [map, orm, normal, cut, glass]) {
     t.anisotropy = 4;
     t.flipY = true;
     t.generateMipmaps = true;
     t.minFilter = THREE.LinearMipmapLinearFilter;
     t.needsUpdate = true;
   }
-  return { map, orm, normal };
+  return { map, orm, normal, cut, glass };
 }
 
 /** Tangent-space normal map (OpenGL convention) from a greyscale height canvas. */
@@ -438,7 +494,14 @@ export function taillampTexture(): { map: THREE.Texture; emissive: THREE.Texture
     g.fillStyle = (x + y) % 16 === 0 ? '#8c1016' : '#5a070b';
     g.fillRect(x, y, 7, 7);
   }
-  g.fillStyle = '#d9d9d9'; g.fillRect(0, 0, W * 0.2, H);           // reverse (white)
+  // reverse lamp: clear faceted lens over a chrome reflector
+  const rg = g.createLinearGradient(0, 0, 0, H);
+  rg.addColorStop(0, '#7d8286'); rg.addColorStop(0.5, '#b4b8bb'); rg.addColorStop(1, '#6a6e72');
+  g.fillStyle = rg; g.fillRect(0, 0, W * 0.2, H);
+  for (let x = 0; x < W * 0.2; x += 8) for (let y = 0; y < H; y += 8) {
+    g.fillStyle = (x + y) % 16 === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.12)';
+    g.fillRect(x, y, 7, 7);
+  }
   g.fillStyle = '#c57a18'; g.fillRect(W * 0.2, H * 0.55, W * 0.3, H * 0.45); // indicator
   ge.fillStyle = '#000'; ge.fillRect(0, 0, W, H);
   ge.fillStyle = '#ff1a14'; ge.fillRect(W * 0.2, 0, W * 0.8, H * 0.55); ge.fillRect(W * 0.5, H * 0.55, W * 0.5, H * 0.45);

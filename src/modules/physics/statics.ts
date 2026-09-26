@@ -35,7 +35,9 @@ export class StaticStreamer {
   update(interests: readonly Interest[], force = false): void {
     const now = performance.now();
     // re-query when an interest point moved far enough, every 1.5 s, or when providers changed
-    let moved = this.dirty || force || interests.length !== this.lastPts.length;
+    // (`force` only drains the whole creation queue: re-querying every provider on every forced
+    // update made scripted simulate() calls needlessly slow)
+    let moved = this.dirty || interests.length !== this.lastPts.length;
     if (!moved) {
       for (let k = 0; k < interests.length; k++) {
         const p = interests[k], q = this.lastPts[k];

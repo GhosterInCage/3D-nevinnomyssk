@@ -193,8 +193,14 @@ const mod: CityModule = {
       f.initChunks();
       forest = f;
       for (const r of pendingClears.splice(0)) applyClear(r);
-      // far field: build everything in view distance before signalling ready (time-sliced)
-      if (!dbg.has('nofar')) while (!f.buildChunks(ctx.settings.shot ? 400 : 60, fp.drawDistance)) await idle();
+      // far field: build everything in view distance before signalling ready. Interactive: time-sliced
+      // (trees appear progressively). Shot mode: one pass with the forest hidden, so the slow software
+      // renderer does not draw half-built frames in between.
+      const tc = performance.now();
+      if (ctx.settings.shot) f.group.visible = false;
+      if (!dbg.has('nofar')) while (!f.buildChunks(ctx.settings.shot ? 1e9 : 60, fp.drawDistance)) await idle();
+      f.group.visible = true;
+      tm(`far chunks (${Math.round(performance.now() - tc)} ms)`);
       console.info(`[vegetation] ${d.n} instances, ${models.size} species models, ready in ${Math.round(performance.now() - t0)} ms`);
     })();
 

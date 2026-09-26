@@ -25,15 +25,45 @@ function starRing(R: number, r: number, rot = 0): number[] {
 
 /** Memorial square in its local frame (+X along the boulevard, origin at the flame POI). Returns flame position (local). */
 export function buildMemorial(fr: Frame, g: Geo, d: Geo, hObelisk: number, groundAt: (lx: number, lz: number) => number): V3 {
-  // paved square (granite slabs), two steps up
-  // flush with the ground at the centre (the surrounding lawns / paths are draped by other layers)
-  const y0 = groundAt(0, 0) - 0.15;
+  // paved square: granite slabs draped on the (sloping) boulevard, the inner square raised 15 cm with
+  // a granite kerb; the obelisk pedestal is level and steps out of the slope on its low side
+  const drape = (x0: number, x1: number, z0: number, z1: number, lift: number, cell: number) => {
+    const nx = Math.max(1, Math.round((x1 - x0) / cell)), nz = Math.max(1, Math.round((z1 - z0) / cell));
+    for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+      const xa = x0 + ((x1 - x0) * i) / nx, xb = x0 + ((x1 - x0) * (i + 1)) / nx;
+      const za = z0 + ((z1 - z0) * j) / nz, zb = z0 + ((z1 - z0) * (j + 1)) / nz;
+      const P3 = (x: number, z: number): V3 => [x, groundAt(x, z) + lift, z];
+      g.quad(P3(xa, zb), P3(xb, zb), P3(xb, za), P3(xa, za), xa, za);
+    }
+  };
   g.paint(col('#8e8a84'), P.TILES, 0.75, 0, 0);
-  g.box(-16, y0 - 3, -10, 16, y0 + 0.3, 10);
+  drape(-16, 16, -10, 10, 0.05, 2);
   g.paint(col('#9c978f'), P.TILES, 0.7, 0, 0);
-  g.box(-13, y0 + 0.3, -7.5, 13, y0 + 0.6, 7.5);
-  // obelisk on a pedestal (east of the flame)
+  drape(-13, 13, -7.5, 7.5, 0.2, 1.6);
+  // kerb around the inner square
+  g.paint(GRANITE_R, P.GRANITE, 0.35, 0, 0);
+  const kerb = (ax: number, az: number, bx: number, bz: number) => {
+    const n = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az) / 2));
+    for (let i = 0; i < n; i++) {
+      const xa = ax + ((bx - ax) * i) / n, za = az + ((bz - az) * i) / n, xb = ax + ((bx - ax) * (i + 1)) / n, zb = az + ((bz - az) * (i + 1)) / n;
+      g.quad([xa, groundAt(xa, za) - 0.1, za], [xb, groundAt(xb, zb) - 0.1, zb], [xb, groundAt(xb, zb) + 0.22, zb], [xa, groundAt(xa, za) + 0.22, za]);
+    }
+  };
+  kerb(13, -7.5, -13, -7.5); kerb(-13, 7.5, 13, 7.5); kerb(-13, -7.5, -13, 7.5); kerb(13, 7.5, 13, -7.5);
+  const topAt = (lx: number, lz: number) => groundAt(lx, lz) + 0.2;
+  // obelisk on a pedestal (east of the flame): level, founded on the highest corner
   const ox = 6;
+  let y0 = -Infinity;
+  for (const [a, b] of [[-3.4, -3.4], [3.4, -3.4], [3.4, 3.4], [-3.4, 3.4], [0, 0]]) y0 = Math.max(y0, topAt(ox + a, b) - 0.6);
+  let yLow = Infinity;
+  for (const [a, b] of [[-3.4, -3.4], [3.4, -3.4], [3.4, 3.4], [-3.4, 3.4]]) yLow = Math.min(yLow, topAt(ox + a, b) - 0.6);
+  // stepped base down to the lowest corner
+  g.paint(GRANITE_R, P.GRANITE, 0.35, 0, F.FLOOD);
+  for (let k = 0, y = y0 + 0.6; y > yLow + 0.45 && k < 12; k++, y -= 0.16) {
+    const e = 3.4 + k * 0.34;
+    g.box(ox - e, y - 0.16 - (y - 0.16 > yLow + 0.45 ? 0 : 0.6), -e, ox + e, y, e, 63 - 4);
+  }
+  g.box(ox - 3.4, yLow - 0.2, -3.4, ox + 3.4, y0 + 0.6, 3.4, 63 - 4);
   g.paint(GRANITE_R, P.GRANITE, 0.3, 0, F.FLOOD);
   g.box(ox - 2.6, y0 + 0.6, -2.6, ox + 2.6, y0 + 2.2, 2.6);
   g.paint(STONE_L, P.STONE, 0.6, 0, F.FLOOD);
@@ -55,7 +85,7 @@ export function buildMemorial(fr: Frame, g: Geo, d: Geo, hObelisk: number, groun
   g.tri3([ox + ht, Y + H, -ht], [ox, Y + H + 1.6, 0], [ox - ht, Y + H, -ht]);
   g.tri3([ox - ht, Y + H, ht], [ox, Y + H + 1.6, 0], [ox + ht, Y + H, ht]);
   // gilded star relief on the west face and bronze inscription band
-  g.paint(col('#d9a441'), P.GOLD, 0.25, 1, F.NOGRIME);
+  g.paint(col('#d9a441'), P.GOLD, 0.25, 1, F.NOGRIME | F.FLOOD);
   const sy = Y + H * 0.72;
   const tHalf = hb + (ht - hb) * 0.72;
   g.at(ox - tHalf - 0.02, sy, 0, 0);
@@ -68,6 +98,8 @@ export function buildMemorial(fr: Frame, g: Geo, d: Geo, hObelisk: number, groun
   // Book of Memory (2000): open granite book behind the obelisk
   g.paint(GRANITE_D, P.GRANITE, 0.25, 0, F.FLOOD);
   const bx = ox + 7.5;
+  y0 = topAt(bx, 0) - 0.6;
+  g.box(bx - 0.6, y0 + 0.3, -3.2, bx + 0.6, y0 + 0.6, 3.2);
   g.box(bx - 0.6, y0 + 0.6, -3.2, bx + 0.6, y0 + 1.0, 3.2);
   g.at(bx, y0 + 1.0, -1.55, 0);
   g.push(new THREE.Matrix4().makeRotationX(-0.28));
@@ -79,6 +111,11 @@ export function buildMemorial(fr: Frame, g: Geo, d: Geo, hObelisk: number, groun
   g.pop(); g.pop();
   // Eternal flame: five-pointed star bowl of dark granite with a bronze burner
   const fx = -1.5;
+  y0 = topAt(fx, 0) - 0.6;
+  g.paint(GRANITE_D, P.GRANITE, 0.2, 0, 0);
+  g.at(fx, y0 + 0.2, 0, 0);
+  g.prism(starRing(2.35, 1.0), 0, 0.4, false, false);
+  g.pop();
   g.paint(GRANITE_D, P.GRANITE, 0.2, 0, 0);
   g.at(fx, y0 + 0.6, 0, 0);
   g.prism(starRing(2.2, 0.9), 0, 0.35, true, false);
@@ -117,11 +154,13 @@ export function buildMemorial(fr: Frame, g: Geo, d: Geo, hObelisk: number, groun
     }
     d.pop();
   }
-  // low granite border blocks and lamp posts at the corners
+  // low granite border blocks at the corners of the inner square
   g.paint(GRANITE_R, P.GRANITE, 0.3, 0, 0);
-  for (const [x, z] of [[-12.5, -7], [12.5, -7], [-12.5, 7], [12.5, 7]]) g.boxC(x, y0 + 0.6, z, 0.9, 0.7, 0.9);
-  addBox(fr, ox, y0, 0, 5.2, hObelisk, 5.2, 0);
-  return [fx, y0 + 1.15, 0];
+  for (const [x, z] of [[-12.5, -7], [12.5, -7], [-12.5, 7], [12.5, 7]]) g.boxC(x, topAt(x, z) - 0.2, z, 0.9, 0.9, 0.9);
+  const yO = topAt(ox, 0) - 0.6;
+  addBox(fr, ox, yO, 0, 5.2, hObelisk, 5.2, 0);
+  const yF = topAt(fx, 0) - 0.6;
+  return [fx, yF + 1.15, 0];
 }
 
 // ------------------------------------------------------------------------------ station
@@ -362,80 +401,139 @@ export function buildPitch(g: Geo, groundAt: (lx: number, lz: number) => number)
 }
 
 // ------------------------------------------------------------------------------ weir
-/** Gated weir along a polyline (local coords) with piers, gates, service bridge, hoists; up/down = water levels. */
-export function buildWeir(fr: Frame, g: Geo, d: Geo, line: number[][], up: number, down: number): void {
-  const deckY = up + 4.2 - fr.oy, bedY = down - 4 - fr.oy;
-  const segs: Array<{ a: number[]; b: number[]; L: number }> = [];
+export interface WeirOpts {
+  /** Deck top (local y) of an external road bridge along the weir axis (roads module); null = own deck. */
+  deckTop?: ((lx: number, lz: number) => number) | null;
+  /** Half width of that road deck (m). */
+  roadHalf?: number;
+  /** Stations (m along the weir line) of the road bridge piers: ours are aligned so theirs stand inside. */
+  piersS?: number[];
+}
+
+/**
+ * Gated barrage along a polyline (local coords): piers with rounded cutwaters, vertical-lift gates on the
+ * upstream side with a hoist gallery beside the road deck, spillway glacis under the tail water,
+ * abutments. When the roads module draws the road bridge on top (opts.deckTop) our deck is skipped and
+ * the piers rise into its girders. up/down = pool / tail water levels (world).
+ */
+export function buildWeir(fr: Frame, g: Geo, d: Geo, line: number[][], up: number, down: number, opts: WeirOpts = {}): void {
+  const segs: Array<{ a: number[]; b: number[]; L: number; s0: number }> = [];
   let total = 0;
   for (let i = 0; i + 1 < line.length; i++) {
     const L = Math.hypot(line[i + 1][0] - line[i][0], line[i + 1][1] - line[i][1]);
-    segs.push({ a: line[i], b: line[i + 1], L });
+    if (L < 0.01) continue;
+    segs.push({ a: line[i], b: line[i + 1], L, s0: total });
     total += L;
   }
-  const bay = 12;
-  const nb = Math.max(2, Math.round(total / bay));
+  if (!segs.length) return;
   const pointAt = (s: number): { x: number; z: number; dx: number; dz: number } => {
-    let acc = 0;
     for (const sg of segs) {
-      if (s <= acc + sg.L || sg === segs[segs.length - 1]) {
-        const t = Math.min(1, (s - acc) / sg.L);
+      if (s <= sg.s0 + sg.L || sg === segs[segs.length - 1]) {
+        const t = THREE.MathUtils.clamp((s - sg.s0) / sg.L, 0, 1);
         const dx = (sg.b[0] - sg.a[0]) / sg.L, dz = (sg.b[1] - sg.a[1]) / sg.L;
         return { x: sg.a[0] + (sg.b[0] - sg.a[0]) * t, z: sg.a[1] + (sg.b[1] - sg.a[1]) * t, dx, dz };
       }
-      acc += sg.L;
     }
     return { x: 0, z: 0, dx: 1, dz: 0 };
   };
-  const conc = col('#a19d93'), gate = col('#4b5a66');
-  for (let i = 0; i <= nb; i++) {
-    const p = pointAt((i / nb) * total);
-    const rot = Math.atan2(-p.dz, p.dx);    // local X along the weir axis
-    // pier (long in the flow direction, local Z), rounded nose
-    g.paint(conc, P.CONCRETE, 0.9);
+  // pier stations: the road-bridge piers plus subdivisions (~14 m bays) and both ends
+  const fixed = [0, ...(opts.piersS ?? []).filter((s) => s > 4 && s < total - 4), total].sort((a, b) => a - b);
+  const st: number[] = [];
+  for (let i = 0; i + 1 < fixed.length; i++) {
+    const n = Math.max(1, Math.round((fixed[i + 1] - fixed[i]) / 14));
+    for (let k = 0; k < n; k++) st.push(fixed[i] + ((fixed[i + 1] - fixed[i]) * k) / n);
+  }
+  st.push(total);
+  const oy = fr.oy;
+  const Y = (w: number) => w - oy;                  // world level -> local
+  const own = !opts.deckTop;
+  const half = opts.roadHalf ?? 5.1;
+  const flatTop = Y(up + 4.6);
+  // road deck top at a station (local y); ours is flat
+  const deckAt = (x: number, z: number) => (opts.deckTop ? opts.deckTop(x, z) : flatTop);
+  const bedY = Y(down - 4.5), crest = Y(up - 2.8);
+  const zG = -(half + 2.6);                          // gate line (upstream of the road deck)
+  const zNose = -(half + 7.5), zTail = half + 6;     // pier extent along the flow (local -Z = upstream)
+  const conc = col('#a19d93'), concD = col('#8a867d'), gate = col('#4b5a66'), hoist = col('#d3cdbb');
+  for (let i = 0; i < st.length; i++) {
+    const p = pointAt(st[i]);
+    const rot = Math.atan2(-p.dz, p.dx);            // local X along the weir axis, +Z downstream
+    const top = deckAt(p.x, p.z);
+    const end = i === 0 || i === st.length - 1;
+    const pw = end ? 3.2 : 2.4;
     g.at(p.x, 0, p.z, rot);
-    const end = i === 0 || i === nb;
-    const pw = end ? 3 : 2.2, pl = 16;
-    g.box(-pw / 2, bedY, -pl / 2, pw / 2, deckY, pl / 2);
-    g.cyl(0, bedY, -pl / 2, pw / 2, pw / 2, up + 1 - fr.oy - bedY, 12, false, true);
-    // hoist house above the gate on the deck (except at the ends)
-    g.pop();
-    addBox(fr, p.x, bedY, p.z, pw, deckY - bedY, pl, rot);
-  }
-  for (let i = 0; i < nb; i++) {
-    const pa = pointAt((i / nb) * total), pb = pointAt(((i + 1) / nb) * total);
-    const mx = (pa.x + pb.x) / 2, mz = (pa.z + pb.z) / 2;
-    const L = Math.hypot(pb.x - pa.x, pb.z - pa.z) - 2.2;
-    const rot = Math.atan2(-(pb.z - pa.z), pb.x - pa.x);
-    g.at(mx, 0, mz, rot);
-    // gate leaf: slightly raised (water passes underneath) -> from up-2.6 to up+0.6
-    g.paint(gate, P.METAL, 0.55, 0.4);
-    const open = (i % 3) === 1 ? 0.9 : 0.35;
-    g.box(-L / 2, up - 2.6 + open - fr.oy, -0.4, L / 2, up + 0.6 + open - fr.oy, 0.4);
-    // spillway sill / glacis downstream (tail side) just under the tail water
     g.paint(conc, P.CONCRETE, 0.9);
-    g.box(-L / 2 - 1.1, bedY, -7, L / 2 + 1.1, down - 0.5 - fr.oy, 7);
-    // road deck + service bridge
-    g.paint(col('#8e8b84'), P.CONCRETE, 0.9);
-    g.box(-L / 2 - 1.2, deckY, -4.5, L / 2 + 1.2, deckY + 0.8, 3.5);
-    g.paint(C.asphalt, P.ASPHALT, 0.95);
-    g.box(-L / 2 - 1.2, deckY + 0.8, -4.2, L / 2 + 1.2, deckY + 0.86, 3.2, 8);
-    // gantry / hoist house over the gate
-    g.paint(col('#cfcab8'), P.PANEL, 0.85);
-    g.box(-L * 0.3, deckY + 0.8, 0.8, L * 0.3, deckY + 4.2, 3.2);
-    g.paint(col('#5a6a70'), P.ROOFSEAM, 0.6, 0.3);
-    g.box(-L * 0.3 - 0.2, deckY + 4.2, 0.6, L * 0.3 + 0.2, deckY + 4.45, 3.4, 63 - 4);
-    d.paint(C.steelDark, P.METAL, 0.6, 0.4);
-    d.railing([-L / 2 - 1.2, deckY + 0.86, -4.3, L / 2 + 1.2, deckY + 0.86, -4.3], 1.1, 2, 0.05);
+    // under the road deck: up into the girders; upstream part carries the hoist gallery; tail part lower
+    g.box(-pw / 2, bedY, -half, pw / 2, top - (own ? 0.9 : 1.1), half);
+    g.box(-pw / 2, bedY, zNose + pw / 2, pw / 2, top - 1.2, -half, 63 - 32);
+    g.box(-pw / 2, bedY, half, pw / 2, Y(down + 1.6), zTail, 63 - 16);
+    // rounded cutwater (upstream) and gate slots
+    g.cyl(0, bedY, zNose + pw / 2, pw / 2, pw / 2, top - 1.2 - bedY, 12, false, true);
+    g.paint(concD, P.CONCRETE, 0.95);
+    g.box(-pw / 2 - 0.02, crest, zG - 0.5, pw / 2 + 0.02, top - 1.2, zG + 0.5, 1 | 2);
     g.pop();
+    addBox(fr, p.x, bedY, p.z, pw, top - bedY, zTail - zNose, rot);
   }
-  // bank abutments / wing walls
+  for (let i = 0; i + 1 < st.length; i++) {
+    const pa = pointAt(st[i]), pb = pointAt(st[i + 1]);
+    const mx = (pa.x + pb.x) / 2, mz = (pa.z + pb.z) / 2;
+    const L = Math.hypot(pb.x - pa.x, pb.z - pa.z) - 2.4;
+    const rot = Math.atan2(-(pb.z - pa.z), pb.x - pa.x);
+    const top = deckAt(mx, mz);
+    const gy = top - 1.2;                            // hoist gallery floor top
+    g.at(mx, 0, mz, rot);
+    d.at(mx, 0, mz, rot);
+    // crest sill + upstream apron, glacis down to the tail water, stilling basin end sill
+    g.paint(conc, P.CONCRETE, 0.9);
+    g.box(-L / 2 - 1.2, bedY, zNose, L / 2 + 1.2, crest, zG + 1.5);
+    g.quad([L / 2 + 1.2, crest, zG + 1.5], [-L / 2 - 1.2, crest, zG + 1.5], [-L / 2 - 1.2, Y(down - 1.2), zTail], [L / 2 + 1.2, Y(down - 1.2), zTail]);
+    g.paint(concD, P.CONCRETE, 0.95);
+    g.box(-L / 2 - 1.2, bedY, zTail, L / 2 + 1.2, Y(down - 0.9), zTail + 14);
+    g.box(-L / 2 - 1.2, Y(down - 0.9), zTail + 12.5, L / 2 + 1.2, Y(down - 0.35), zTail + 14);
+    // lift gate (every third one raised further: that is where the white water pours out)
+    const open = (i % 3) === 1 ? 1.1 : 0.3;
+    g.paint(gate, P.METAL, 0.55, 0.4);
+    g.box(-L / 2 - 0.3, crest + open, zG - 0.3, L / 2 + 0.3, Y(up + 0.7) + open, zG + 0.3);
+    d.paint(col('#3c4852'), P.METAL, 0.6, 0.45);
+    for (let k = 1; k < 4; k++) d.box(-L / 2, crest + open + k * 0.85, zG - 0.45, L / 2, crest + open + k * 0.85 + 0.18, zG - 0.3);
+    // hoist gallery (service deck beside the road deck) with a hoist house over each gate
+    g.paint(col('#8e8b84'), P.CONCRETE, 0.9);
+    g.box(-L / 2 - 1.2, gy - 0.9, zNose + 1.5, L / 2 + 1.2, gy, -half);
+    g.paint(hoist, P.PANEL, 0.85);
+    g.box(-L * 0.32, gy, zG - 2.0, L * 0.32, gy + 3.4, zG + 1.6);
+    g.paint(col('#5a6a70'), P.ROOFSEAM, 0.6, 0.3);
+    g.box(-L * 0.32 - 0.25, gy + 3.4, zG - 2.25, L * 0.32 + 0.25, gy + 3.65, zG + 1.85, 63 - 4);
+    g.paint(col('#23282c'), P.WINDOW, 0.1, 0, F.WINLIT);
+    g.box(-0.9, gy + 1.2, zG - 2.03, 0.9, gy + 2.4, zG - 2.0, 16);
+    d.paint(C.steelDark, P.METAL, 0.6, 0.4);
+    d.railing([-L / 2 - 1.2, gy, zNose + 1.6, L / 2 + 1.2, gy, zNose + 1.6], 1.1, 2, 0.05);
+    if (own) {
+      // own road deck (only without the roads module)
+      g.paint(col('#8e8b84'), P.CONCRETE, 0.9);
+      g.box(-L / 2 - 1.2, top - 0.9, -half, L / 2 + 1.2, top - 0.08, half);
+      g.paint(C.asphalt, P.ASPHALT, 0.95);
+      g.box(-L / 2 - 1.2, top - 0.08, -half + 0.4, L / 2 + 1.2, top, half - 0.4, 8);
+      d.paint(C.steelDark, P.METAL, 0.6, 0.4);
+      d.railing([-L / 2 - 1.2, top, -half + 0.2, L / 2 + 1.2, top, -half + 0.2], 1.1, 2, 0.05);
+      d.railing([L / 2 + 1.2, top, half - 0.2, -L / 2 - 1.2, top, half - 0.2], 1.1, 2, 0.05);
+    }
+    g.pop();
+    d.pop();
+    // night: lamp on each hoist house
+    const lx = mx + Math.sin(rot) * (zG - 2.1), lz = mz + Math.cos(rot) * (zG - 2.1);
+    d.paint(col('#ffb060'), P.LAMP, 0.4, 0, 0);
+    d.boxC(lx, gy + 2.9, lz, 0.25, 0.14, 0.25);
+    fr.glows.push({ x: fr.ox + lx, y: fr.oy + gy + 2.85, z: fr.oz + lz, color: new THREE.Color(2.2, 1.15, 0.35), size: 1.1, day: 0 });
+  }
+  // bank abutments / wing walls up to the deck
   for (const s of [0, total]) {
     const p = pointAt(s);
     const rot = Math.atan2(-p.dz, p.dx);
+    const top = deckAt(p.x, p.z);
     g.paint(conc, P.CONCRETE, 0.9);
     g.at(p.x, 0, p.z, rot);
     const sgn = s === 0 ? -1 : 1;
-    g.box(sgn > 0 ? 0 : -10, bedY, -9, sgn > 0 ? 10 : 0, deckY + 0.86, 5);
+    g.box(sgn > 0 ? 1.6 : -9, bedY, zNose, sgn > 0 ? 9 : -1.6, top - 1.2, zTail + 14);
     g.pop();
   }
 }

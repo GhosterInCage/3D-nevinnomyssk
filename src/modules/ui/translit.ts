@@ -102,11 +102,14 @@ export function swapLayout(s: string): string {
 }
 
 /** Levenshtein distance with early exit when it exceeds `max`. */
+let bufA = new Int32Array(64), bufB = new Int32Array(64);
+
 export function editDistance(a: string, b: string, max = 2): number {
   const la = a.length, lb = b.length;
   if (Math.abs(la - lb) > max) return max + 1;
-  let prev = new Array(lb + 1);
-  let cur = new Array(lb + 1);
+  if (bufA.length < lb + 1) { bufA = new Int32Array(lb + 1); bufB = new Int32Array(lb + 1); }
+  let prev = bufA;
+  let cur = bufB;
   for (let j = 0; j <= lb; j++) prev[j] = j;
   for (let i = 1; i <= la; i++) {
     cur[0] = i;
@@ -118,7 +121,7 @@ export function editDistance(a: string, b: string, max = 2): number {
       if (cur[j] < rowMin) rowMin = cur[j];
     }
     if (rowMin > max) return max + 1;
-    [prev, cur] = [cur, prev];
+    const tmp = prev; prev = cur; cur = tmp;
   }
   return prev[lb];
 }

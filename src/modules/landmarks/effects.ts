@@ -77,6 +77,14 @@ export class Glows {
     this.points.userData.noPathTrace = true;
     this.points.name = 'landmark-glows';
   }
+  /** Move a range of lights (e.g. after a landmark was rebuilt). */
+  setPositions(start: number, specs: GlowSpec[]): void {
+    const a = this.points.geometry.getAttribute('position') as THREE.BufferAttribute;
+    specs.forEach((sp, i) => { if (start + i < a.count) a.setXYZ(start + i, sp.x, sp.y, sp.z); });
+    a.needsUpdate = true;
+    this.points.geometry.computeBoundingSphere();
+  }
+
   update(night: number, time: number, cam: THREE.PerspectiveCamera, heightPx: number, exposure = 1): void {
     const u = this.material.uniforms;
     u.uGain.value = THREE.MathUtils.clamp(4.0 / Math.max(exposure, 1e-3), 0.25, 1.0);

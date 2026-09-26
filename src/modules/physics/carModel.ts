@@ -6,11 +6,12 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import type { AppContext } from '../../core/context';
-import { DIM, bodySection, bodyStations, cabinSection, cabinStations, curve } from './carShape';
+import { DIM, GH, bodySection, bodyStations, cabinSection, cabinStations, curve, greenhouseBase } from './carShape';
 import {
-  paintBodyAtlas, uvSide, uvTop, uvFront, uvRear, REGION, tyreTextures, headlampTexture, taillampTexture, plateTexture,
+  paintBodyAtlas, uvSide, uvTop, uvFront, uvRear, REGION, HOLE_UV, tyreTextures, headlampTexture, taillampTexture, plateTexture,
   type BodyTextures,
 } from './carTextures';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
 export const CAR_COLORS: Record<string, string> = {
   cherry: '#5e1420', silver: '#b9bdc2', white: '#e6e6e2', black: '#121315', blue: '#1d3552', green: '#2f4a3a', beige: '#b8a27c',
@@ -65,8 +66,12 @@ function orientOutwards(g: THREE.BufferGeometry): void {
   }
 }
 
-/** De-index and give every triangle an atlas UV by its dominant facing. */
-function projectUVs(gIn: THREE.BufferGeometry): THREE.BufferGeometry {
+/**
+ * De-index and give every triangle an atlas UV by its dominant facing. With `cabinHole`, the
+ * upward faces of the lower body inside the greenhouse footprint (the lid of the lofted tube at
+ * belt height) map to the always-transparent HOLE_UV texel, opening the cabin to the interior.
+ */
+function projectUVs(gIn: THREE.BufferGeometry, cabinHole = false): THREE.BufferGeometry {
   const g = gIn.toNonIndexed();
   const p = g.getAttribute('position') as THREE.BufferAttribute;
   const uv = new Float32Array(p.count * 2);
@@ -75,10 +80,19 @@ function projectUVs(gIn: THREE.BufferGeometry): THREE.BufferGeometry {
     a.fromBufferAttribute(p, t); b.fromBufferAttribute(p, t + 1); c.fromBufferAttribute(p, t + 2);
     n.subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)).normalize();
     const ax = Math.abs(n.x), ay = n.y, az = Math.abs(n.z);
+    let hole = false;
+    if (cabinHole && n.y > 0.3) {
+      const zc = (a.z + b.z + c.z) / 3;
+      if (zc > GH.zRB + 0.01 && zc < GH.zWS - 0.01) {
+        const lim = greenhouseBase(zc) + 0.005;
+        hole = Math.max(Math.abs(a.x), Math.abs(b.x), Math.abs(c.x)) < lim;
+      }
+    }
     for (let k = 0; k < 3; k++) {
       const v = k === 0 ? a : k === 1 ? b : c;
       let u: [number, number];
-      if (n.y < -0.55) u = [0.5, REGION.under.v0 + 0.01];
+      if (hole) u = HOLE_UV;
+      else if (n.y < -0.55) u = [0.5, REGION.under.v0 + 0.01];
       else if (ax >= ay && ax >= az) u = uvSide(v.z, v.y);
       else if (ay >= az) u = uvTop(v.z, v.x);
       else if (n.z > 0) u = uvFront(v.x, v.y);
@@ -234,11 +248,93 @@ export interface WheelVisual {
   side: number;
 }
 
+// ------------------------------------------------------------------ interior
+/** Seats, dashboard, steering wheel, console, parcel shelf: what is seen through the glass. */
+function buildInterior(parent: THREE.Object3D, reg: <T extends THREE.Material>(m: T) => T): THREE.Object3D {
+  const fabric = reg(new THREE.MeshStandardMaterial({ name: 'car-seat', color: 0x2c2d31, roughness: 0.96, metalness: 0 }));
+  const dash = reg(new THREE.MeshStandardMaterial({ name: 'car-dash', color: 0x19191b, roughness: 0.7, metalness: 0 }));
+  const carpet = reg(new THREE.MeshStandardMaterial({ name: 'car-carpet', color: 0x121213, roughness: 1, metalness: 0 }));
+  const trimSilver = reg(new THREE.MeshStandardMaterial({ name: 'car-trim-silver', color: 0x8d9094, roughness: 0.35, metalness: 0.9 }));
+  const g = new THREE.Group();
+  g.name = 'car-interior';
+  const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number, rx = 0, cast = true) => {
+    const me = new THREE.Mesh(geo, m);
+    me.position.set(x, y, z);
+    me.rotation.x = rx;
+    me.castShadow = cast; me.receiveShadow = true;
+    g.add(me);
+    return me;
+  };
+  add(new THREE.BoxGeometry(1.44, 0.04, 2.3), carpet, 0, 0.3, -0.33, 0, false);
+  // front seats (driver on the +x / left side)
+  const cushion = new RoundedBoxGeometry(0.5, 0.14, 0.52, 2, 0.05);
+  const back = new RoundedBoxGeometry(0.5, 0.66, 0.13, 2, 0.05);
+  const headrest = new RoundedBoxGeometry(0.26, 0.19, 0.1, 2, 0.04);
+  for (const x of [0.36, -0.36]) {
+    add(cushion, fabric, x, 0.45, 0.02, 0.08);
+    add(back, fabric, x, 0.8, -0.3, -0.28);
+    add(headrest, fabric, x, 1.2, -0.43, -0.2);
+    add(new THREE.CylinderGeometry(0.008, 0.008, 0.1, 6), trimSilver, x + 0.07, 1.09, -0.41, -0.2, false);
+    add(new THREE.CylinderGeometry(0.008, 0.008, 0.1, 6), trimSilver, x - 0.07, 1.09, -0.41, -0.2, false);
+  }
+  // rear bench + parcel shelf
+  add(new RoundedBoxGeometry(1.28, 0.14, 0.5, 2, 0.05), fabric, 0, 0.47, -0.88, 0.06);
+  add(new RoundedBoxGeometry(1.3, 0.56, 0.13, 2, 0.05), fabric, 0, 0.78, -1.16, -0.32);
+  add(new THREE.BoxGeometry(1.4, 0.025, 0.3), dash, 0, 0.995, -1.41, 0, false);
+  // dashboard, instrument binnacle, centre stack + console, gear lever
+  add(new RoundedBoxGeometry(1.46, 0.42, 0.36, 2, 0.06), dash, 0, 0.76, 0.58, 0.1);
+  add(new RoundedBoxGeometry(0.36, 0.07, 0.17, 2, 0.03), dash, 0.36, 0.985, 0.47, 0.25);
+  add(new RoundedBoxGeometry(0.24, 0.3, 0.12, 2, 0.03), dash, 0, 0.72, 0.42, 0.25);
+  add(new THREE.BoxGeometry(0.2, 0.2, 0.52), dash, 0, 0.42, 0.14);
+  add(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 8), dash, 0, 0.6, 0.28, -0.25, false);
+  add(new THREE.SphereGeometry(0.03, 12, 8), trimSilver, 0, 0.68, 0.26, 0, false);
+  // steering wheel (rim, hub, three spokes) on a column
+  const wheel = new THREE.Group();
+  wheel.position.set(0.36, 0.9, 0.36);
+  wheel.rotation.x = 0.43;
+  const spin = new THREE.Group();
+  wheel.add(spin);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.185, 0.017, 8, 36), dash);
+  rim.castShadow = true;
+  spin.add(rim);
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.075, 0.06, 18).rotateX(Math.PI / 2), dash);
+  spin.add(hub);
+  const badge = new THREE.Mesh(new THREE.CircleGeometry(0.014, 16), dash);
+  badge.position.z = -0.031;
+  badge.rotation.y = Math.PI;
+  spin.add(badge);
+  for (const a of [0, Math.PI * 0.62, -Math.PI * 0.62]) {
+    const sp = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.14, 0.018), dash);
+    sp.position.set(Math.sin(a) * 0.1, -Math.cos(a) * 0.1, 0);
+    sp.rotation.z = a;
+    spin.add(sp);
+  }
+  const col = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.26, 10).rotateX(Math.PI / 2), dash);
+  col.position.z = 0.14;
+  wheel.add(col);
+  g.add(wheel);
+  // instrument faces (speedometer + tachometer) under the binnacle
+  const gauge = reg(new THREE.MeshStandardMaterial({ name: 'car-gauges', color: 0x0b0c0e, roughness: 0.3, metalness: 0, emissive: new THREE.Color(0.55, 0.75, 1.0), emissiveIntensity: 0 }));
+  for (const gx of [0.29, 0.43]) {
+    const face = new THREE.Mesh(new THREE.CircleGeometry(0.052, 24), gauge);
+    face.position.set(gx, 0.945, 0.43);
+    face.rotation.set(-0.25, Math.PI, 0);
+    g.add(face);
+  }
+  g.userData.gauge = gauge;
+  // rear-view mirror
+  add(new RoundedBoxGeometry(0.24, 0.065, 0.03, 2, 0.012), dash, 0, 1.3, 0.1, 0.1, false);
+  parent.add(g);
+  return spin;
+}
+
 // ------------------------------------------------------------------ the car
 export interface CarModel {
   root: THREE.Group;
   body: THREE.Group;
   wheels: WheelVisual[];
+  /** spins about its local z with the steering input */
+  steeringWheel: THREE.Object3D;
   headSpots: THREE.SpotLight[];
   shadow: THREE.Mesh;
   setLights(night: number, brake: number, reverse: boolean, lowBeamOn: boolean): void;
@@ -259,12 +355,16 @@ export function buildCarModel(ctx: AppContext, color = CAR_COLORS.cherry): CarMo
   orientOutwards(lower);
   const cabin = loft(cabinStations(), cabinSection, false);
   orientOutwards(cabin);
-  const bodyGeo = mergeGeometries([projectUVs(lower), projectUVs(cabin)])!;
+  const lowerUV = projectUVs(lower, true);
+  const cabinUV = projectUVs(cabin);
+  const bodyGeo = mergeGeometries([lowerUV, cabinUV])!;
   bodyGeo.computeBoundingSphere();
   let tex: BodyTextures = paintBodyAtlas(color);
+  // painted shell; glass areas of the atlas are cut out (alphaTest) and drawn by the glass shell
   const paint = reg(new THREE.MeshPhysicalMaterial({
     name: 'car-paint',
     map: tex.map, roughnessMap: tex.orm, metalnessMap: tex.orm, clearcoatMap: tex.orm, normalMap: tex.normal,
+    alphaMap: tex.cut, alphaTest: 0.5,
     normalScale: new THREE.Vector2(0.8, 0.8),
     roughness: 1, metalness: 1, clearcoat: 1, clearcoatRoughness: 0.035, envMapIntensity: 1.1,
   }));
@@ -272,6 +372,39 @@ export function buildCarModel(ctx: AppContext, color = CAR_COLORS.cherry): CarMo
   bodyMesh.name = 'car-body';
   bodyMesh.castShadow = bodyMesh.receiveShadow = true;
   body.add(bodyMesh);
+  // inside of the shell (door cards, footwells, headliner), seen through the windows
+  const innerLower = reg(new THREE.MeshStandardMaterial({ name: 'car-trim-inner', color: 0x1d1e21, roughness: 0.85, metalness: 0, side: THREE.BackSide, alphaMap: tex.cut, alphaTest: 0.5 }));
+  const headliner = reg(new THREE.MeshStandardMaterial({ name: 'car-headliner', color: 0x68645e, roughness: 0.95, metalness: 0, side: THREE.BackSide, alphaMap: tex.cut, alphaTest: 0.5 }));
+  for (const [g, m, nm] of [[lowerUV, innerLower, 'car-inner-lower'], [cabinUV, headliner, 'car-headliner']] as Array<[THREE.BufferGeometry, THREE.Material, string]>) {
+    const me = new THREE.Mesh(g, m);
+    me.name = nm;
+    me.receiveShadow = true;
+    body.add(me);
+  }
+  // glass: the greenhouse again, only where the atlas says glass; tinted, reflective, see-through
+  const glassMat = reg(new THREE.MeshPhysicalMaterial({
+    name: 'car-glass', color: 0x0d1417, roughness: 0.02, metalness: 0, ior: 1.52, specularIntensity: 1,
+    transparent: true, opacity: 0.45, alphaMap: tex.glass, alphaTest: 0.02, depthWrite: false, envMapIntensity: 1.3,
+  }));
+  // Physically blended glass: transmitted = background x (1 - a), reflected = the full (Fresnel
+  // weighted) specular, i.e. the reflection is not scaled down by the blending alpha.
+  glassMat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', `
+      {
+        float nvG = clamp(abs(dot(normalize(vViewPosition), normal)), 0.0, 1.0);
+        float frG = 0.04 + 0.96 * pow(1.0 - nvG, 5.0);
+        float aG = clamp(diffuseColor.a + (1.0 - diffuseColor.a) * frG, 0.05, 0.98);
+        gl_FragColor = vec4(totalDiffuse * diffuseColor.a / aG + totalEmissiveRadiance + totalSpecular / aG, aG);
+      }`);
+  };
+  glassMat.customProgramCacheKey = () => 'car-glass-fresnel';
+  const glassMesh = new THREE.Mesh(cabinUV, glassMat);
+  glassMesh.name = 'car-glass';
+  glassMesh.renderOrder = 2;
+  glassMesh.userData.ptMaterial = new THREE.MeshPhysicalMaterial({ name: 'car-glass-pt', color: 0xd9e3e0, roughness: 0, metalness: 0, transmission: 1, thickness: 0.004, ior: 1.52, alphaMap: tex.glass, alphaTest: 0.5 });
+  body.add(glassMesh);
+  const steeringWheel = buildInterior(body, reg);
+  const gaugeMat = (body.getObjectByName('car-interior')?.userData.gauge ?? null) as THREE.MeshStandardMaterial | null;
 
   const proj = new Projector(bodyGeo);
 
@@ -334,7 +467,7 @@ export function buildCarModel(ctx: AppContext, color = CAR_COLORS.cherry): CarMo
 
   // ---------------------------------------------------------------- mirrors, exhaust
   const plastic = reg(new THREE.MeshStandardMaterial({ name: 'car-plastic', color: 0x151618, roughness: 0.55, metalness: 0.05 }));
-  const mirrorGlass = reg(new THREE.MeshStandardMaterial({ name: 'car-mirror', color: 0xffffff, roughness: 0.02, metalness: 1.0 }));
+  const mirrorGlass = reg(new THREE.MeshStandardMaterial({ name: 'car-mirror', color: 0x6d747b, roughness: 0.04, metalness: 1.0 }));
   const housingGeo = new THREE.SphereGeometry(1, 20, 12);
   housingGeo.scale(0.1, 0.066, 0.075);
   const glassGeo = new THREE.CircleGeometry(1, 24);
@@ -446,12 +579,13 @@ export function buildCarModel(ctx: AppContext, color = CAR_COLORS.cherry): CarMo
   }
 
   const model: CarModel = {
-    root, body, wheels, headSpots, shadow,
+    root, body, wheels, headSpots, shadow, steeringWheel,
     setLights(night: number, brake: number, reverse: boolean, lowBeamOn: boolean) {
       const on = lowBeamOn ? 1 : 0;
-      headMat.emissiveIntensity = on * (1.5 + 16 * night);
-      for (const s of headSpots) s.intensity = on * night * 420;
-      tailMat.emissiveIntensity = (on * (0.6 + 3 * night)) + brake * (4 + 10 * night);
+      if (gaugeMat) gaugeMat.emissiveIntensity = on ? 0.02 + 0.05 * night : 0;
+      headMat.emissiveIntensity = on * (1.5 + 12 * night);
+      for (const s of headSpots) s.intensity = on * night * 260;
+      tailMat.emissiveIntensity = (on * (0.25 + 0.55 * night)) + brake * (2.2 + 2.5 * night);
       revMat.emissiveIntensity = reverse ? 3 + 10 * night : 0;
       revMat.opacity = reverse ? 0.95 : 0.0;
     },
@@ -459,8 +593,11 @@ export function buildCarModel(ctx: AppContext, color = CAR_COLORS.cherry): CarMo
       const old = tex;
       tex = paintBodyAtlas(hex);
       paint.map = tex.map; paint.roughnessMap = tex.orm; paint.metalnessMap = tex.orm; paint.clearcoatMap = tex.orm; paint.normalMap = tex.normal;
+      paint.alphaMap = tex.cut; innerLower.alphaMap = tex.cut; headliner.alphaMap = tex.cut;
+      glassMat.alphaMap = tex.glass;
+      (glassMesh.userData.ptMaterial as THREE.MeshPhysicalMaterial).alphaMap = tex.glass;
       paint.needsUpdate = true;
-      old.map.dispose(); old.orm.dispose(); old.normal.dispose();
+      old.map.dispose(); old.orm.dispose(); old.normal.dispose(); old.cut.dispose(); old.glass.dispose();
     },
     dispose() {
       root.traverse((o: any) => { if (o.isMesh) o.geometry?.dispose?.(); });

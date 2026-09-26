@@ -48,6 +48,7 @@ export const ICON = {
 const g = (body: string) => `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 
 export const KIND_STYLE: Record<string, { color: string; glyph: string }> = {
+  city: { color: '#ffd27a', glyph: g('<path d="M3 21h18"/><path d="M5 21V11l4-3v13"/><path d="M9 21V6l5-3v18"/><path d="M14 21v-8l5 2v6"/>') },
   district: { color: '#e9eef5', glyph: g('<path d="M3 21h18M5 21V8l7-4 7 4v13"/>') },
   settlement: { color: '#d8c7a3', glyph: g('<path d="M3 21h18M6 21v-8l6-5 6 5v8"/>') },
   landmark: { color: '#ffb547', glyph: g('<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>') },

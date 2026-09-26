@@ -14,7 +14,7 @@ Outputs  public/data/places/
       "boundary": [x0,z0,x1,z1,...]      city boundary (городской округ Невинномысск), simplified 25 m
       "items": [ {                       one entry per searchable place
           "n":  name (Russian, as in OSM/Overture),
-          "k":  kind (see KINDS),
+          "k":  kind (see KINDS; "city" = the whole city, label only from high above),
           "x","z": representative point,
           "r":  rank 1 (most important) .. 5 (minor)  -> label visibility + search ordering
           "c":  optional category label in Russian (e.g. "Аптека", "Кофейня"),
@@ -92,6 +92,7 @@ def norm(s):
 
 # ----------------------------------------------------------------------------------------- kinds
 KINDS = {
+    "city": ["Город", "City"],
     "district": ["Район города", "District"],
     "settlement": ["Населённый пункт", "Settlement"],
     "landmark": ["Достопримечательность", "Landmark"],
@@ -291,7 +292,8 @@ CURATED = [
     ("ДК Химиков", "culture", 917, 1823, 2, 22, None),
     ("Культурно-досуговый центр «Родина»", "culture", 829, 2181, 2, 20, None),
     ("Историко-краеведческий музей", "culture", 671, 1236, 2, 16, None),
-    ("Ледовый дворец «Олимпийский»", "sport", 2870, 2136, 2, 20, None),
+    ("Ледовый дворец «Олимпийский»", "sport", 2919, 2191, 2, 20, None),
+    ("Колесо обозрения", "landmark", -622, 112, 2, 30, "Колесо обозрения в Центральном парке, над набережной Кубани."),
     ("Центральный рынок", "mall", -428, -495, 2, 14, None),
     ("Набережная Кубани", "viewpoint", -965, 339, 2, 10, "Прогулочная набережная у городского парка."),
     ("Плотина Невинномысского канала", "landmark", -2225, -1189, 1, 16,
@@ -320,6 +322,7 @@ DISTRICTS = [
 
 
 ALIASES = {
+    "Невинномысск": ["Nevinnomyssk", "город Невинномысск", "Невинка"],
     "Невинномысская ГРЭС": ["НГРЭС", "ГРЭС", "Nevinnomysskaya GRES"],
     "Невинномысский Азот (ЕвроХим)": ["Невинномысский Азот", "Азот", "Еврохим", "EuroChem"],
     "Мемориал «Вечный огонь»": ["Вечный огонь", "Невинномысск, Вечный Огонь"],
@@ -341,6 +344,9 @@ ALIASES = {
 
 
 DESC_EN = {
+    "Невинномысск": ("Nevinnomyssk", "Industrial city on the Kuban river in Stavropol Krai: founded as a Cossack stanitsa in 1825, "
+                     "town status in 1939, about 117 thousand inhabitants (2025). Known for the Azot chemical works and the GRES power station."),
+    "Колесо обозрения": ("Ferris wheel", "Ferris wheel in the Central Park above the Kuban embankment."),
     "Невинномысская ГРЭС": ("Nevinnomysskaya GRES", "Thermal power station; first turbine started in June 1960, ≈1550 MW. Its ≈250 m chimney is the tallest structure in the city."),
     "Невинномысский Азот (ЕвроХим)": ("Nevinnomyssky Azot (EuroChem)", "Chemical works: first ammonia produced in August 1962; a major nitrogen-fertiliser producer, part of EuroChem."),
     "Мемориал «Вечный огонь»": ("Eternal Flame memorial", "Memorial to the soldiers of the Great Patriotic War in the city centre, by Mira Boulevard."),
@@ -371,6 +377,11 @@ DESC_EN = {
 
 
 def add_curated():
+    # the city itself (search "Невинномысск" -> overview flight; label only from high above)
+    en, de = DESC_EN["Невинномысск"]
+    add("Невинномысск", "city", 250, 400, 1, h=150, cur=1, al=ALIASES.get("Невинномысск"), en=en, de=de,
+        d="Город на реке Кубань в Ставропольском крае: станица основана в 1825 г., статус города — с 1939 г., "
+          "около 117 тыс. жителей (2025). Известен химкомбинатом «Азот» и Невинномысской ГРЭС.")
     for name, kind, x, z, rank, h, d in CURATED:
         en, de = DESC_EN.get(name, (None, None))
         add(name, kind, x, z, rank, h=h, d=d, cur=1, al=ALIASES.get(name), en=en, de=de)
@@ -653,6 +664,8 @@ for nm, segs in by_name.items():
         in_city = locality_of(q.x, q.y) is None
         if in_city and L > 3000 and best <= 3:
             best = max(1, best - 1)
+        if L < 500 and best <= 2:
+            best = 3  # short fragments of main roads (e.g. a 300 m "улица Ленина") are not landmarks
         rank = best
         name = nm
         cat = "Улица"
@@ -677,20 +690,48 @@ for nm, segs in by_name.items():
         nstreets += 1
 log(nstreets, "street clusters")
 
+# ------------------------------------------------------------------------- name-based refinement
+# Overture building classes "public"/"civic" (and some place categories) lump very different things under
+# "gov"; refine by name so a sauna or a passport office does not get a prominent label.
+REFINE = [  # (substring of lower-case name, kind or None = keep, rank, category or None)
+    ("администрац", "gov", 2, "Администрация"), ("дворец культуры", "culture", 2, "Дом культуры"),
+    ("дом культуры", "culture", 2, "Дом культуры"), ("загс", "gov", 3, "ЗАГС"), ("гибдд", "gov", 3, "Полиция"),
+    ("полиц", "gov", 3, "Полиция"), ("мфц", "gov", 3, "МФЦ"), ("мои документы", "gov", 3, "МФЦ"),
+    ("пожарн", "gov", 4, "Пожарная часть"), ("пч-", "gov", 4, "Пожарная часть"), ("почт", "gov", 4, "Почта"),
+    ("уфмс", "gov", 4, "Учреждение"), ("участков", "gov", 4, "Полиция"), ("ветеринар", "medical", 4, "Ветклиника"),
+    ("саун", "service", 4, "Сауна"), ("бань", "service", 4, "Баня"), ("банька", "service", 4, "Баня"),
+]
+for it in ITEMS:
+    if it.get("cur") or it["k"] not in ("gov", "service", "building", "culture"):
+        continue
+    low = it["n"].lower()
+    for key, kind, rank, cat in REFINE:
+        if key in low:
+            it["k"], it["r"] = kind, rank
+            if cat:
+                it["c"] = cat
+            break
+    else:
+        if it["k"] == "gov" and it["r"] < 4 and it.get("src") == "b":
+            it["r"] = 4  # unnamed-purpose "public"/"civic" buildings
+
 # ------------------------------------------------------------------------- default category labels
 KIND_C = {"education": "Учебное заведение", "medical": "Медучреждение", "gov": "Учреждение", "industry": "Предприятие",
           "church": "Храм", "sport": "Спорт", "culture": "Культура", "park": "Парк", "allotment": "Садовое товарищество",
           "bus_stop": "Остановка", "mall": "Торговый центр", "hotel": "Гостиница", "power": "Энергетика",
           "monument": "Памятник", "nature": "Природа", "viewpoint": "Смотровая точка", "shop": "Магазин",
           "food": "Кафе", "fuel": "АЗС", "station": "Ж/д станция", "district": "Район города"}
-NAME_C = [("детский сад", "Детский сад"), ("мбдоу", "Детский сад"), ("школ", "Школа"), ("гимнази", "Гимназия"),
+NAME_C = [("детский сад", "Детский сад"), ("мбдоу", "Детский сад"), ("мадоу", "Детский сад"), ("школ", "Школа"),
+          ("сош", "Школа"), ("оош", "Школа"), ("мбоу", "Школа"), ("мкоу", "Школа"), ("гимнази", "Гимназия"),
           ("лицей", "Лицей"), ("колледж", "Колледж"), ("техникум", "Колледж"), ("больниц", "Больница"), ("гбуз", "Больница"),
           ("поликлиник", "Поликлиника"), ("роддом", "Роддом"), ("стадион", "Стадион"), ("храм", "Храм"), ("собор", "Храм"),
           ("пожарн", "Пожарная часть"), ("почта", "Почта"), ("снт", "Садовое товарищество"), ("гэс", "Электростанция"),
           ("вэс", "Электростанция"), ("грэс", "Электростанция"), ("подстанц", "Подстанция"), ("завод", "Предприятие"),
           ("комбинат", "Предприятие")]
+GENERIC_C = set(KIND_C.values()) | {"Учебное заведение", "Медучреждение", "Учреждение", "Предприятие"}
 for it in ITEMS:
-    if it.get("c") or it["k"] in ("street", "water", "settlement"):
+    # a name keyword may refine a generic category ("МБОУ СОШ №12": Учебное заведение -> Школа)
+    if (it.get("c") and it["c"] not in GENERIC_C) or it["k"] in ("street", "water", "settlement"):
         continue
     low = it["n"].lower()
     for key, c in NAME_C:

@@ -91,6 +91,7 @@ export class TimeWeather {
       ctx.env.setDate(this.dateInput.value);
       ctx.env.update(0);
       ctx.events.emit('time', ctx.env.hours);
+      this.poke();
       this.refresh();
     });
     const seasons = h('div', { class: 'nv-chips', style: 'padding:6px 0 0' });
@@ -134,6 +135,7 @@ export class TimeWeather {
         s?.setWeather?.({ [k]: +input.value });
         val.textContent = `${Math.round(+input.value * 100)}%`;
         this.syncEnvWeather({ [k]: +input.value });
+        this.poke();
       });
       this.sliders[k] = { input, val };
       body.append(h('div', { class: 'nv-row' }, h('label', { text: t(label) }), h('div', { style: 'flex:1.4' }, input), val));
@@ -148,6 +150,7 @@ export class TimeWeather {
     if (sky?.setTime) sky.setTime(hh);
     else { ctx.env.hours = hh; ctx.events.emit('time', hh); }
     ctx.env.update(0);
+    this.poke();
     this.refresh(false);
   }
 
@@ -163,7 +166,13 @@ export class TimeWeather {
     const sky = this.ctx.get<any>('sky');
     sky?.setWeather?.({ cloudCover: p.cloudCover, rain: p.rain, fog: p.fog, cirrus: p.cirrus });
     this.syncEnvWeather(p);
+    this.poke();
     this.refresh();
+  }
+
+  /** Ask the sky to re-render (it may render on demand). */
+  private poke(): void {
+    try { this.ctx.get<any>('sky')?.requestRender?.(); } catch { /* optional */ }
   }
 
   private syncEnvWeather(w: { cloudCover?: number; rain?: number; fog?: number }): void {

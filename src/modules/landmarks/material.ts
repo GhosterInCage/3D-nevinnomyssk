@@ -17,6 +17,8 @@ export interface LmUniforms {
   lmTime: THREE.IUniform<number>;
   lmFlood: THREE.IUniform<THREE.Color>;
   lmLitFrac: THREE.IUniform<number>;
+  /** Eternal-flame light: world position (xyz) + intensity (w); lights nearby landmark surfaces. */
+  lmFlame: THREE.IUniform<THREE.Vector4>;
 }
 
 export function makeLmUniforms(): LmUniforms {
@@ -26,6 +28,7 @@ export function makeLmUniforms(): LmUniforms {
     lmTime: { value: 0 },
     lmFlood: { value: new THREE.Color(1.0, 0.78, 0.52) },
     lmLitFrac: { value: 0.35 },
+    lmFlame: { value: new THREE.Vector4(0, -1e5, 0, 0) },
   };
 }
 
@@ -36,6 +39,8 @@ varying vec4 vLmSurf;
 varying vec3 vLmPos;
 varying vec3 vLmNrm;
 varying vec2 vLmUv;
+varying vec3 vLmW;
+varying vec3 vLmWN;
 `;
 
 const VERT_MAIN = /* glsl */ `
@@ -43,6 +48,16 @@ vLmSurf = aSurf;
 vLmPos = transformed;
 vLmNrm = objectNormal;
 vLmUv = lmUv;
+{
+  vec4 lmw = vec4(transformed, 1.0);
+  vec3 lmn = objectNormal;
+  #ifdef USE_INSTANCING
+  lmw = instanceMatrix * lmw;
+  lmn = mat3(instanceMatrix) * lmn;
+  #endif
+  vLmW = (modelMatrix * lmw).xyz;
+  vLmWN = mat3(modelMatrix) * lmn;
+}
 `;
 
 const FRAG_PARS = /* glsl */ `
@@ -51,6 +66,9 @@ uniform float lmNight;
 uniform float lmTime;
 uniform vec3 lmFlood;
 uniform float lmLitFrac;
+uniform vec4 lmFlame;
+varying vec3 vLmW;
+varying vec3 vLmWN;
 varying vec4 vLmSurf;
 varying vec3 vLmPos;
 varying vec3 vLmNrm;
@@ -165,9 +183,11 @@ void lmSurface(vec3 baseCol) {
     // the glow through dusty glass is soft and uneven
     vec2 bay = floor(uv / vec2(18.0, 40.0));
     float hbay = lmHash(bay + floor(p.xz * 0.004) * 7.0);
-    float lit = step(hbay, lmLitFrac + 0.2) * (1.0 - board) * (1.0 - frame * fade) * lmBit(fl, 4.0);
+    float lit = step(hbay, lmLitFrac + 0.12) * (1.0 - board) * (1.0 - frame * fade) * lmBit(fl, 4.0);
     vec3 lampC = hbay < 0.3 ? vec3(0.8, 0.92, 0.85) : vec3(1.0, 0.72, 0.42);
-    lmS.emis = lampC * lmNight * (lit * (0.016 + hp * 0.012) * (0.7 + nz.g * 0.6) + 0.0015) * (1.0 - board);
+    // (per-pane variation fades out with distance so far facades do not turn into noise)
+    float paneVar = mix(0.55 + hp * 0.9, 1.0, 1.0 - fade);
+    lmS.emis = lampC * lmNight * (lit * 0.019 * paneVar * (0.88 + nz.g * 0.24) + 0.001) * (1.0 - board);
   } else if (pat < 6.5) {
     // METAL: painted steel with rust runs
     float rust = smoothstep(0.55, 0.8, nz.a) * grime * vert;
@@ -243,6 +263,17 @@ void lmSurface(vec3 baseCol) {
     float facing = mix(0.35, 1.0, vert);
     lmS.emis += baseCol * lmS.alb * lmFlood * lmNight * fall * facing * 0.11;
   }
+
+  // Eternal flame: a flickering warm point light on the nearby memorial surfaces (inverse square)
+  if (lmFlame.w > 0.0) {
+    vec3 dF = lmFlame.xyz - vLmW;
+    float d2 = dot(dF, dF);
+    if (d2 < 900.0 && pat != 10.0) {
+      float ndl = max(dot(normalize(vLmWN), dF * inversesqrt(d2)), 0.0);
+      vec3 alb = mix(baseCol * lmS.alb, lmS.over, lmS.overA);
+      lmS.emis += alb * vec3(1.0, 0.52, 0.18) * lmFlame.w * (0.15 + 0.85 * ndl) / (d2 + 0.6) * (1.0 - smoothstep(300.0, 900.0, d2));
+    }
+  }
 }
 
 vec3 lmPerturb(vec3 surfPos, vec3 surfNorm, float h) {
@@ -294,6 +325,6 @@ export function createLmMaterial(u: LmUniforms, opts: LmMaterialOptions = {}): T
   m.name = opts.name ?? 'landmark';
   const mine: OBC = (shader) => patch(shader, u);
   m.onBeforeCompile = mine;
-  m.customProgramCacheKey = () => `landmarks-v1-${m.side}`;
+  m.customProgramCacheKey = () => `landmarks-v2-${m.side}`;
   return m;
 }

@@ -223,12 +223,157 @@ export function buildGres(data: any, fr: Frame, main: Geo, det: Geo): void {
     }
     addBox(fr, cx, y0 - 2, cz, T.len, 47, T.wid, T.rot);
   }
+  // ------------- combined-cycle unit PGU-410 (2011)
+  if (data.pgu) pguUnit(fr, main, det, data.pgu);
   // ------------- chimneys
   for (const s of data.stacks) chimney(fr, main, det, { x: s.x - fr.ox, z: s.z - fr.oz, h: s.h, r0: s.r0, r1: s.r1, style: s.style });
   // ------------- tanks
   for (const t of data.tanks) {
     const oil = t.kind === 'oil';
     tank(fr, main, det, t.x - fr.ox, t.z - fr.oz, t.r, t.h, oil ? col('#5f6260') : col('#a9b0ad'), { bund: oil, seed: Math.floor(t.x * 3) });
+  }
+}
+
+/** Steel flue-gas stack (PGU heat-recovery boiler): plain tube, top band, platforms, ladder, lamps. */
+export function steelStack(fr: Frame, g: Geo, d: Geo, x: number, z: number, y0: number, h: number, r: number): void {
+  const seg = 28;
+  g.paint(C.concreteDark, P.CONCRETE, 0.9);
+  g.cyl(x, y0 - 1, z, r + 1.5, r + 1.5, 2.2, seg);
+  // shell in 3 m cans (weld lines read as subtle rings), light grey paint; red/white top bands
+  g.paint(col('#9aa0a2'), P.METAL, 0.45, 0.35);
+  g.lathe(x, y0 + 1.2, z, [r + 0.25, 0, r + 0.25, 1.6, r, 3.2, r, h * 0.8], seg, true);
+  for (let i = 0; i < 4; i++) {
+    const a = h * 0.8 + (i * h * 0.2) / 4, b = h * 0.8 + ((i + 1) * h * 0.2) / 4;
+    g.paint(i % 2 === 0 ? C.white : C.red, P.METAL, 0.45, 0.3);
+    g.lathe(x, y0 + 1.2, z, [r, a, r, b], seg, true);
+  }
+  g.paint(C.soot, P.METAL, 0.8, 0.4, F.NOGRIME);
+  g.lathe(x, y0 + 1.2 + h, z, [r, 0, r + 0.15, 0.1, r + 0.15, 0.5, r - 0.15, 0.55, r - 0.15, -4], seg, false);
+  g.disc(x, y0 + h - 3, z, r - 0.15, seg, true);
+  for (const f of [0.5, 0.96]) {
+    const Y = y0 + 1.2 + h * f;
+    g.paint(C.steelDark, P.GRATE, 0.7, 0.4);
+    g.disc(x, Y, z, r + 1.2, seg, true, r);
+    d.paint(C.yellow, P.METAL, 0.6, 0.3);
+    d.ringRailing(x, Y, z, r + 1.15, 1.1, seg, 0.05);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      d.paint(C.lampRed, P.LAMP, 0.4, 0, 0);
+      d.boxC(x + Math.cos(a) * (r + 1.0), Y + 1.25, z + Math.sin(a) * (r + 1.0), 0.3, 0.3, 0.3);
+      fr.glows.push({ x: fr.ox + x + Math.cos(a) * (r + 1.0), y: fr.oy + Y + 1.4, z: fr.oz + z + Math.sin(a) * (r + 1.0), color: new THREE.Color(4.4, 0.4, 0.2), size: 1.8, day: 0, phase: 0 });
+    }
+  }
+  d.paint(C.steelDark, P.GRATE, 0.7, 0.4);
+  d.beam([x + r + 0.35, y0 + 1, z], [x + r + 0.35, y0 + h, z], 0.5, 0.06);
+  fr.colliders.push({ kind: 'cylinder', key: `lm:${fr.key}:pgu-stack`, center: [fr.ox + x, fr.oy + y0 + h / 2, fr.oz + z], radius: r + 0.3, halfHeight: h / 2 });
+}
+
+/**
+ * Combined-cycle unit PGU-410 (block 14, 2011): single-shaft Siemens SGT5-PAC 4000F + SST-900 in a
+ * clad turbine hall, electrical / auxiliary bay, gas-turbine air-intake filter house on the roof, exhaust
+ * transition into a horizontal CMI heat-recovery steam generator with drums on top, and a steel stack.
+ */
+export function pguUnit(fr: Frame, g: Geo, d: Geo, U: any): void {
+  const cx = U.x - fr.ox, cz = U.z - fr.oz;
+  const cs = Math.cos(U.rot), sn = Math.sin(U.rot);
+  const y0 = groundMax(fr, U.ring) - fr.oy + 0.3;
+  const L = U.len, W = U.wid;
+  // stack in the building frame
+  const dx = U.stack.x - U.x, dz = U.stack.z - U.z;
+  const lxS = THREE.MathUtils.clamp(dx * cs - dz * sn, -L / 2 + 14, L / 2 - 14);
+  const lzS = dx * sn + dz * cs;
+  const sg = lzS >= 0 ? 1 : -1;
+  const rS = U.stack.r0 ?? 3.6;
+  g.at(cx, 0, cz, U.rot);
+  d.at(cx, 0, cz, U.rot);
+  const clad = col('#cdd2d4'), clad2 = col('#9ea6aa'), band = col('#3f5f78'), roof = col('#6d7274'), glz = col('#56666b');
+  // turbine hall (44 m deep on the HRSG side) + lower electrical / auxiliary bay
+  const zH = sg * (W / 2), zM = sg * (W / 2 - 44);
+  const hallB: Band[] = [[-3, 1.0, P.PANEL, clad2, 0], [1.0, 16, P.CORR, clad, 0], [16, 18.5, P.GLAZING, glz, F.WINLIT], [18.5, 26, P.CORR, clad, 0], [26, 27.4, P.CORR, band, 0], [27.4, 30, P.CORR, clad, 0]];
+  const auxB: Band[] = [[-3, 1.0, P.PANEL, clad2, 0], [1.0, 4.2, P.CORR, clad, 0], [4.2, 6.2, P.GLAZING, glz, F.WINLIT], [6.2, 10.2, P.CORR, clad, 0], [10.2, 12.2, P.GLAZING, glz, F.WINLIT], [12.2, 15, P.CORR, clad, 0], [15, 16.2, P.CORR, band, 0], [16.2, 17, P.CORR, clad, 0]];
+  hall(g, d, -L / 2, L / 2, Math.min(zH, zM), Math.max(zH, zM), y0, 30, hallB, hallB, roof, { gableRise: 1.2 });
+  hall(g, d, -L / 2, L / 2, Math.min(-zH, zM), Math.max(-zH, zM), y0, 17, auxB, auxB, roof, { faces: sg > 0 ? 1 | 4 | 8 : 2 | 4 | 8 });
+  // steel columns expressed on the long facades every 12 m, roller-shutter doors on the gable ends
+  g.paint(clad2, P.METAL, 0.6, 0.3);
+  for (const [zz, hh, out] of [[zH, 30.2, sg], [-zH, 17.2, -sg]]) {
+    for (let x = -L / 2 + 6; x < L / 2 - 1; x += 12) g.box(x - 0.3, y0 - 1, Math.min(zz, zz + out * 0.35), x + 0.3, y0 + hh, Math.max(zz, zz + out * 0.35), 63 - 4);
+  }
+  for (const ex of [-1, 1]) {
+    g.paint(col('#7b8386'), P.CORR, 0.55, 0.4);
+    const zd = sg * (W / 2 - 22);
+    g.box(ex * L / 2 - 0.1, y0 - 0.2, zd - 5, ex * L / 2 + 0.1, y0 + 11, zd + 5, ex > 0 ? 2 : 1);
+    const za = -sg * (W / 2 - 14);
+    g.box(ex * L / 2 - 0.1, y0 - 0.2, za - 2.5, ex * L / 2 + 0.1, y0 + 5, za + 2.5, ex > 0 ? 2 : 1);
+    g.paint(clad2, P.METAL, 0.6, 0.3);
+    g.box(ex * L / 2 - 0.4, y0 + 11, zd - 5.4, ex * L / 2 + 0.4, y0 + 11.6, zd + 5.4, 63 - 4);
+  }
+  // air-intake filter house on the roof above the gas turbine, with the intake duct down into the hall
+  const fz = sg * (W / 2 - 16);
+  g.paint(col('#b9c0c3'), P.CORR, 0.5, 0.35);
+  g.box(lxS - 9, y0 + 31, fz - 7, lxS + 9, y0 + 43, fz + 7);
+  g.paint(C.steelDark, P.GRATE, 0.8, 0.3);
+  g.box(lxS - 9.05, y0 + 33, fz - 7.05, lxS + 9.05, y0 + 41, fz + 7.05, 16 | 32 | 1 | 2);
+  g.paint(col('#b9c0c3'), P.METAL, 0.5, 0.35);
+  g.box(lxS - 9.5, y0 + 43, fz - 7.5, lxS + 9.5, y0 + 43.6, fz + 7.5);
+  d.paint(C.steel, P.METAL, 0.6, 0.35);
+  for (const px of [-8, 8]) for (const pz of [-6, 6]) d.beam([lxS + px, y0 + 30, fz + pz], [lxS + px, y0 + 31, fz + pz], 0.5);
+  // exhaust transition + horizontal HRSG (gas flows along z towards the stack)
+  const h0 = sg * (W / 2), h1 = sg * (W / 2 + 7);
+  const e1 = sg * (Math.abs(lzS) - rS - 5);
+  g.paint(C.steel, P.METAL, 0.6, 0.35);
+  g.box(lxS - 4.5, y0 + 4, Math.min(h0, h1), lxS + 4.5, y0 + 13, Math.max(h0, h1));
+  const hrW = 11, hrH = 31;
+  g.paint(col('#aab2b5'), P.CORR, 0.5, 0.4);
+  g.box(lxS - hrW, y0, Math.min(h1, e1), lxS + hrW, y0 + hrH, Math.max(h1, e1));
+  // steel structure lines, roof with steam drums, penthouse
+  d.paint(C.steelDark, P.METAL, 0.6, 0.4);
+  const zl0 = Math.min(h1, e1), zl1 = Math.max(h1, e1);
+  for (let z = zl0; z <= zl1 + 0.01; z += (zl1 - zl0) / 4) for (const px of [-hrW - 0.3, hrW + 0.3]) d.beam([lxS + px, y0, z], [lxS + px, y0 + hrH + 1, z], 0.45);
+  g.paint(col('#8d9699'), P.CORR, 0.5, 0.4);
+  g.box(lxS - hrW + 1, y0 + hrH, zl0 + 2, lxS + hrW - 1, y0 + hrH + 3.5, zl1 - 2);
+  g.paint(C.alu, P.METAL, 0.4, 0.6);
+  const drums: Array<[number, number]> = [[0.25, 1.2], [0.5, 0.9], [0.78, 0.7]];
+  for (const [t, r] of drums) g.hcyl(lxS - hrW + 2, lxS + hrW - 2, y0 + hrH + 3.5 + r + 0.3, zl0 + (zl1 - zl0) * t, r, 12, true);
+  d.paint(C.yellow, P.METAL, 0.6, 0.3);
+  d.railing([lxS - hrW + 1, y0 + hrH + 3.5, zl0 + 2, lxS + hrW - 1, y0 + hrH + 3.5, zl0 + 2, lxS + hrW - 1, y0 + hrH + 3.5, zl1 - 2, lxS - hrW + 1, y0 + hrH + 3.5, zl1 - 2, lxS - hrW + 1, y0 + hrH + 3.5, zl0 + 2], 1.1, 1.8, 0.05);
+  // stair tower on the side of the HRSG + walkways
+  const stx = lxS + hrW + 3;
+  d.paint(col('#b79b3b'), P.METAL, 0.6, 0.3);
+  const zs = (zl0 + zl1) / 2;
+  for (let yy = 0; yy < hrH; yy += 4) {
+    d.beam([stx - 1.2, y0 + yy, zs - 2], [stx + 1.2, y0 + yy + 2, zs], 1.0, 0.1);
+    d.beam([stx + 1.2, y0 + yy + 2, zs], [stx - 1.2, y0 + yy + 4, zs + 2], 1.0, 0.1);
+  }
+  d.paint(C.steelDark, P.METAL, 0.6, 0.4);
+  for (const [px, pz] of [[-1.6, -2.4], [1.6, -2.4], [-1.6, 2.4], [1.6, 2.4]]) d.beam([stx + px, y0, zs + pz], [stx + px, y0 + hrH + 3, zs + pz], 0.2);
+  for (let yy = 8; yy < hrH; yy += 8) {
+    d.paint(C.steelDark, P.GRATE, 0.7, 0.4);
+    d.box(lxS + hrW + 0.3, y0 + yy - 0.12, zl0, lxS + hrW + 1.5, y0 + yy, zl1);
+  }
+  // feed-water / steam pipes from the HRSG to the hall
+  d.paint(C.alu, P.METAL, 0.4, 0.6);
+  for (let i = 0; i < 3; i++) d.pipe([lxS - hrW - 0.8, y0 + 20 + i * 1.6, zl0 + 3], [lxS - hrW - 0.8, y0 + 20 + i * 1.6, sg * (W / 2)], 0.35 + i * 0.05, 10);
+  // outlet duct into the stack
+  const sx0 = lxS, sz0 = sg * Math.abs(lzS);
+  g.paint(C.steel, P.METAL, 0.6, 0.35);
+  g.box(lxS - 4, y0 + 20, Math.min(e1, sz0), lxS + 4, y0 + 29, Math.max(e1, sz0));
+  // generator step-up transformer on the aux side, and a gas-reduction skid
+  transformer(g, d, -L / 4, y0 - 0.3, -sg * (W / 2 + 10), sg > 0 ? Math.PI : 0);
+  transformer(g, d, L / 4, y0 - 0.3, -sg * (W / 2 + 10), sg > 0 ? Math.PI : 0);
+  g.pop();
+  d.pop();
+  // stack (frame coordinates) + colliders
+  const wx = cx + sx0 * cs + sz0 * sn, wz = cz - sx0 * sn + sz0 * cs;
+  steelStack(fr, g, d, wx, wz, fr.ground(fr.ox + wx, fr.oz + wz) - fr.oy, U.stack.h ?? 60, rS);
+  addBox(fr, cx, y0 - 2, cz, L, 32, W, U.rot);
+  const hx = cx + lxS * cs + ((zl0 + zl1) / 2) * sn, hz = cz - lxS * sn + ((zl0 + zl1) / 2) * cs;
+  addBox(fr, hx, y0, hz, hrW * 2, hrH + 4, zl1 - zl0, U.rot);
+  // night work lights along the HRSG and the hall
+  for (let yy = 8; yy < hrH; yy += 8) {
+    for (const t of [0.2, 0.8]) {
+      const lz = zl0 + (zl1 - zl0) * t, lx = lxS + hrW + 1.6;
+      workLight(fr, d, cx + lx * cs + lz * sn, y0 + yy + 2.4, cz - lx * sn + lz * cs, yy !== 16);
+    }
   }
 }
 
@@ -241,13 +386,23 @@ export function groundMax(fr: Frame, ring: number[]): number {
 
 // ------------------------------------------------------------------------------ AZOT
 export function buildAzot(data: any, fr: Frame, main: Geo, det: Geo, tileOf: (x: number, z: number) => { main: Geo; detail: Geo }): void {
+  for (const _ of buildAzotSteps(data, fr, main, det, tileOf)) { /* run to completion */ }
+}
+
+/**
+ * Azot, built incrementally: yields after the tall structures and after every chunk of process cells /
+ * pipe racks so the caller can spread the work over several frames.
+ */
+export function* buildAzotSteps(data: any, fr: Frame, main: Geo, det: Geo, tileOf: (x: number, z: number) => { main: Geo; detail: Geo }, chunk = 150): Generator<void> {
   for (const s of data.stacks) chimney(fr, main, det, { x: s.x - fr.ox, z: s.z - fr.oz, h: s.h, r0: s.r0, r1: s.r1, style: s.style ?? 'concrete_top' });
   for (const p of data.prill) prillingTower(fr, main, det, p.x - fr.ox, p.z - fr.oz, p.r, p.h, Math.floor(p.x * 7));
   for (const c of data.columns) column(fr, main, det, c.x - fr.ox, c.z - fr.oz, c.r, c.h, Math.floor(c.x * 11), C.alu);
   for (const a of data.ammonia) ammoniaTank(fr, main, det, a.x - fr.ox, a.z - fr.oz, a.r, a.h, Math.floor(a.x * 5 + a.z));
   for (const t of data.tanks) tank(fr, main, det, t.x - fr.ox, t.z - fr.oz, t.r, t.h, t.r > 10 ? col('#c9cbc6') : C.alu, { seed: Math.floor(t.x * 13), dome: t.r < 12 });
+  yield;
   // process equipment cells (tiles, so that the detail layer can be distance-culled)
   // (cells with a strong DSM signal hold tall columns: the 30 m DSM underestimates slender objects)
+  let n = 0;
   for (const c of data.cells) {
     const t = tileOf(c[0], c[1]);
     if (c[3] > 11 && (c[2] & 3) !== 0) {
@@ -255,14 +410,18 @@ export function buildAzot(data: any, fr: Frame, main: Geo, det: Geo, tileOf: (x:
     } else {
       processCell(fr, t.main, t.detail, c[0] - fr.ox, c[1] - fr.oz, c[2], c[3]);
     }
+    if (++n % chunk === 0) yield;
   }
+  yield;
   // pipe racks (roughly half of the internal roads carry a rack)
   const R = rng(4242);
+  n = 0;
   for (const r of data.racks as number[][]) {
     if (R() > 0.45) continue;
     const pts = r.map((v, i) => (i % 2 === 0 ? v - fr.ox : v - fr.oz));
     const t = tileOf(r[0], r[1]);
     pipeRack(fr, t.main, t.detail, pts, Math.floor(r[0] * 3 + r[1]));
+    if (++n % 12 === 0) yield;
   }
   void THREE;
 }

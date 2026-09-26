@@ -55,10 +55,32 @@ export class TerrainTiles {
 
   /** Physics ground height (bicubic terrain + road lift). */
   heightAt(x: number, z: number): number {
-    const hf = this.sys.ctx.heightfield;
-    if (!hf) return 0;
-    return bicubicHeight(hf, x, z) + this.lift(x, z);
+    return this.terrainY(x, z) + this.lift(x, z);
   }
+
+  /**
+   * Rendered terrain surface: the terrain service's bicubic heightAt when the terrain module is
+   * loaded, else the same Catmull-Rom surface evaluated here (identical maths).
+   */
+  terrainY(x: number, z: number): number {
+    if (this.terrainFn === undefined) {
+      const t = this.sys.ctx.get('terrain');
+      if (t && typeof t.heightAt === 'function') this.terrainFn = (a: number, b: number) => t.heightAt(a, b);
+      else if (this.sys.ctx.heightfield) this.terrainFn = null;
+      else return 0;
+    }
+    const f = this.terrainFn;
+    if (f) {
+      const h = f(x, z);
+      if (Number.isFinite(h)) return h;
+    }
+    const hf = this.sys.ctx.heightfield;
+    return hf ? bicubicHeight(hf, x, z) : 0;
+  }
+
+  private terrainFn: ((x: number, z: number) => number) | null | undefined = undefined;
+  /** forget the cached terrain service (it may appear after physics initialised) */
+  resetSources(): void { this.terrainFn = undefined; this.roadsApi = undefined; }
 
   private roadsApi: any = undefined;
   private lift(x: number, z: number): number {
@@ -70,8 +92,16 @@ export class TerrainTiles {
     return GROUND_LIFT;
   }
 
+  private hfVersion = -1;
+
   update(interests: readonly Interest[], force = false): void {
     this.clock++;
+    // the shared height field was edited (construction sites, carved beds): rebuild every tile
+    const hf = this.sys.ctx.heightfield;
+    if (hf && hf.version !== this.hfVersion) {
+      if (this.hfVersion >= 0) this.clear();
+      this.hfVersion = hf.version;
+    }
     const want: Array<[number, number, number]> = []; // i, j, distance
     for (const p of interests) {
       const r = p.terrainR;
@@ -120,7 +150,6 @@ export class TerrainTiles {
 
   private build(i: number, j: number): Collider {
     const R = this.sys.R;
-    const hf = this.sys.ctx.heightfield;
     const n1 = CELLS + 1;
     const x0 = i * TILE, z0 = j * TILE;
     const step = TILE / CELLS;
@@ -130,7 +159,7 @@ export class TerrainTiles {
       const x = x0 + c * step;
       for (let r = 0; r < n1; r++) {
         const z = z0 + r * step;
-        h[c * n1 + r] = (hf ? bicubicHeight(hf, x, z) : 0) + this.lift(x, z);
+        h[c * n1 + r] = this.terrainY(x, z) + this.lift(x, z);
       }
     }
     const desc = R.ColliderDesc.heightfield(CELLS, CELLS, h, { x: TILE, y: 1, z: TILE }, R.HeightFieldFlags.FIX_INTERNAL_EDGES)

@@ -7,7 +7,9 @@
 //
 // Options: --w/--h viewport, --mobile (390x844, touch, DPR 2), --only/--skip, --cam x,y,z,h,p, --time H,
 //          --quality (default low), --extra "&k=v", --eval js (after ready), --settle ms, --steps JSON [{eval, settle, out}],
-//          --dir output dir for steps, --url existing server, --lang ru|en
+//          --dir output dir for steps, --url existing server, --lang ru|en, --wait ms (default 900000)
+// Step fields (all optional, applied in this order): eval (JS), type (text), press (key), click [x,y], tap [x,y],
+//          until (JS expression polled until truthy, e.g. "!__ui.flight.active"), settle (ms), out (png)
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -84,8 +86,9 @@ try {
   } else {
     await page.goto(url, { waitUntil: 'load', timeout: 120000 });
   }
-  await page.waitForFunction(() => window.__city?.isReady?.(), null, { timeout: +(args.wait || 300000), polling: 500 });
-  console.log(`ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  await page.waitForFunction(() => window.__city?.isReady?.(), null, { timeout: +(args.wait || 900000), polling: 1000 });
+  const states = await page.evaluate(() => window.__city.states.map((s) => `${s.id}:${s.status}${s.ms !== undefined ? `(${s.ms}ms)` : ''}${s.error ? ` ERROR ${s.error.split('\n')[0]}` : ''}`));
+  console.log(`ready in ${((Date.now() - t0) / 1000).toFixed(1)}s  modules: ${states.join('  ')}`);
   await page.waitForTimeout(1500);
   const steps = args.steps ? JSON.parse(args.steps) : [{ eval: args.eval, settle: +(args.settle || 2500), out: args.out || 'tools/shots/ui/ui.png' }];
   for (const s of steps) {
@@ -97,6 +100,11 @@ try {
     if (s.press) await page.keyboard.press(s.press);
     if (s.click) await page.mouse.click(s.click[0], s.click[1]);
     if (s.tap) await page.touchscreen.tap(s.tap[0], s.tap[1]);
+    if (s.until) {
+      const tu = Date.now();
+      await page.waitForFunction(s.until, null, { timeout: 600000, polling: 500 });
+      console.log(`until ${s.until}: ${((Date.now() - tu) / 1000).toFixed(1)}s`);
+    }
     await page.waitForTimeout(s.settle ?? 2500);
     // let a couple of frames render
     await page.evaluate(() => new Promise((r) => { const c = window.__city.ctx; const f = c.frame; const off = c.events.on('frame', (n) => { if (n - f >= 2) { off(); r(); } }); }));
@@ -106,7 +114,14 @@ try {
       // SwiftShader frames are slow: freeze the render loop so the compositor can capture the page
       const ft = await page.evaluate(() => { const c = window.__city.ctx; c.renderer.setAnimationLoop(null); return c.frame; });
       await page.waitForTimeout(300);
-      await page.screenshot({ path: file, timeout: 180000 });
+      try {
+        await page.screenshot({ path: file, timeout: 180000 });
+      } catch (e) {
+        // SwiftShader under heavy machine load: give the compositor more time and retry once
+        console.log('screenshot timed out, retrying', file);
+        await page.waitForTimeout(5000);
+        await page.screenshot({ path: file, timeout: 300000 });
+      }
       await page.evaluate(() => window.__city.ctx.start());
       console.log('saved', file, 'frame', ft);
     }
@@ -114,7 +129,11 @@ try {
 } catch (e) {
   console.error('FAILED:', e.message);
   code = 1;
-  try { await page.screenshot({ path: 'tools/shots/ui/failed.png' }); } catch { /* ignore */ }
+  try {
+    const st = await page.evaluate(() => (window.__city?.states ?? []).map((s) => `${s.id}:${s.status}`).join(' '));
+    console.error('module states:', st);
+  } catch { /* ignore */ }
+  try { fs.mkdirSync(path.join(root, 'tools/shots/ui'), { recursive: true }); await page.screenshot({ path: path.join(root, 'tools/shots/ui/failed.png'), timeout: 60000 }); } catch { /* ignore */ }
 }
 const uniq = [...new Set(logs)];
 if (uniq.length) console.log(`--- browser console (${uniq.length}) ---\n${uniq.slice(0, 50).join('\n')}`);

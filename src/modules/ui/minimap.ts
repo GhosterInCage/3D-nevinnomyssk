@@ -59,7 +59,19 @@ const ROAD_COL: Record<string, [string, number]> = {
 /** Crisp vector roads + building footprints drawn over the raster when zoomed in. */
 class VectorLayer {
   private roads: Array<{ x0: number; z0: number; x1: number; z1: number; col: string; w: number; major: boolean; p: Float32Array }> | null = null;
+  /** Decoded building footprints (decoding per redraw would cost ~thousands of ring decodes at 20 Hz). */
+  private rings = new Map<number, Float64Array | null>();
   constructor(private ctx: AppContext) {}
+
+  private ring(b: any, i: number): Float64Array | null {
+    let r = this.rings.get(i);
+    if (r === undefined) {
+      if (this.rings.size > 30000) this.rings.clear();
+      r = b.footprint(i) as Float64Array | null;
+      this.rings.set(i, r && r.length >= 6 ? r : null);
+    }
+    return r ?? null;
+  }
 
   private ensureRoads(): void {
     if (this.roads) return;
@@ -100,8 +112,8 @@ class VectorLayer {
       let n = 0;
       for (const i of ids) {
         if (n++ > 2500) break;
-        const r: Float64Array | null = b.footprint(i);
-        if (!r || r.length < 6) continue;
+        const r = this.ring(b, i);
+        if (!r) continue;
         g.beginPath();
         g.moveTo(sx(r[0]), sy(r[1]));
         for (let k = 2; k < r.length; k += 2) g.lineTo(sx(r[k]), sy(r[k + 1]));
@@ -489,6 +501,7 @@ class BigMap {
     };
     const items = this.gz.items.filter((it) => {
       if (it.k === 'street') return it.r <= (v.mpp < 4 ? 3 : v.mpp < 8 ? 2 : 1) && it.r <= 3;
+      if (it.k === 'city') return false; // the whole map is the city
       if (it.k === 'district' || it.k === 'settlement') return true;
       return it.r <= (v.mpp < 3 ? 3 : v.mpp < 7 ? 2 : 1);
     }).sort((a, b) => a.r - b.r);
@@ -499,6 +512,7 @@ class BigMap {
       if (it.k === 'district' || it.k === 'settlement') {
         g.font = `700 ${it.r === 1 ? 13 : 11}px system-ui, sans-serif`;
         const tw = g.measureText(name.toUpperCase()).width;
+        if (sx - tw / 2 < 2 || sx + tw / 2 > w - 2) continue; // never clip names at the map edge
         if (!tryPlace(sx - tw / 2 - 4, sy - 9, sx + tw / 2 + 4, sy + 9)) continue;
         g.lineWidth = 3.5;
         g.strokeStyle = 'rgba(0,0,0,0.75)';
@@ -508,6 +522,7 @@ class BigMap {
       } else if (it.k === 'street' || it.k === 'water') {
         g.font = `${it.k === 'water' ? 'italic 600' : '600'} 11px system-ui, sans-serif`;
         const tw = g.measureText(name).width;
+        if (sx - tw / 2 < 2 || sx + tw / 2 > w - 2) continue;
         if (!tryPlace(sx - tw / 2 - 3, sy - 8, sx + tw / 2 + 3, sy + 8)) continue;
         g.lineWidth = 3;
         g.strokeStyle = it.k === 'water' ? 'rgba(0,25,50,0.85)' : 'rgba(255,255,255,0.85)';
@@ -517,7 +532,10 @@ class BigMap {
       } else {
         g.font = '600 11.5px system-ui, sans-serif';
         const tw = g.measureText(name).width;
-        if (!tryPlace(sx - 8, sy - 8, sx + 12 + tw, sy + 8)) continue;
+        // text to the right of the dot, or to the left when it would run off the map
+        const left = sx + 12 + tw > w - 4;
+        if (left && sx - 12 - tw < 4) continue;
+        if (!(left ? tryPlace(sx - 12 - tw, sy - 8, sx + 8, sy + 8) : tryPlace(sx - 8, sy - 8, sx + 12 + tw, sy + 8))) continue;
         const ks = kindStyle(it.k);
         g.beginPath();
         g.arc(sx, sy, 5, 0, Math.PI * 2);
@@ -526,12 +544,13 @@ class BigMap {
         g.lineWidth = 1.5;
         g.strokeStyle = '#0d141c';
         g.stroke();
-        g.textAlign = 'left';
+        g.textAlign = left ? 'right' : 'left';
+        const tx = left ? sx - 9 : sx + 9;
         g.lineWidth = 3;
         g.strokeStyle = 'rgba(0,0,0,0.75)';
-        g.strokeText(name, sx + 9, sy);
+        g.strokeText(name, tx, sy);
         g.fillStyle = '#ffffff';
-        g.fillText(name, sx + 9, sy);
+        g.fillText(name, tx, sy);
         g.textAlign = 'center';
       }
     }

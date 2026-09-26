@@ -64,7 +64,7 @@ const STR = {
   mapHint: ['Клик — перелёт, перетаскивание — перемещение, колесо — масштаб', 'Click to fly, drag to pan, wheel to zoom'],
   close: ['Закрыть', 'Close'],
   flyHere: ['Перелететь', 'Fly here'],
-  walkHere: ['Прогуляться здесь', 'Walk here'],
+  walkHere: ['Пешком', 'Walk here'],
   coords: ['Координаты', 'Coordinates'],
   elevation: ['Высота н.у.м.', 'Elevation'],
   asl: ['н.у.м.', 'ASL'],

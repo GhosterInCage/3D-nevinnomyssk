@@ -102,7 +102,7 @@ export class SearchBox {
     const cam = this.ctx.camera.position;
     if (!q.trim()) {
       if (!this.gz.items.length) return;
-      const top = this.gz.items.filter((it) => it.r === 1 && it.k !== 'street' && it.k !== 'district' && it.k !== 'settlement').slice(0, 9);
+      const top = this.gz.items.filter((it) => it.r === 1 && it.k !== 'street' && it.k !== 'district' && it.k !== 'settlement' && it.k !== 'city').slice(0, 9);
       this.results.append(h('div', { class: 'nv-sec', text: t('popular') }));
       for (const it of top) { this.hits.push(it); this.results.append(this.row(it, '', Math.hypot(it.x - cam.x, it.z - cam.z))); }
       const chips = h('div', { class: 'nv-chips' });

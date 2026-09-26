@@ -45,6 +45,8 @@ export interface PlacesService {
   ready: Promise<void>;
 }
 
+const NON_POI = new Set(['street', 'district', 'settlement', 'city', 'water', 'bus_stop']);
+
 interface Prefs { labels: boolean; streets: boolean; minimap: boolean; stats: boolean }
 
 function loadPrefs(): Prefs {
@@ -55,9 +57,11 @@ function loadPrefs(): Prefs {
 /** Fly-to framing per kind. */
 function framing(it: PlaceItem): FlyOptions {
   switch (it.k) {
+    case 'city': return { distance: 9500, pitch: -34, height: 0, heading: 0 };
     case 'settlement': return { distance: 3200, pitch: -32, height: 0 };
     case 'district': return { distance: 1500, pitch: -32, height: 0 };
-    case 'street': return { distance: it.r <= 2 ? 520 : 260, pitch: -30, height: 2 };
+    // stay below the street-label height cut-off (labels.ts STREET_MAX_AGL) so the street's own plate shows
+    case 'street': return { distance: it.r <= 2 ? 560 : 300, pitch: -28, height: 2 };
     case 'water': return { distance: it.r <= 1 ? 900 : 450, pitch: -24, height: 0 };
     case 'coords': return { distance: 320, pitch: -35, height: 0 };
     default: {
@@ -90,6 +94,7 @@ class UIApp {
   private prefs = loadPrefs();
   private external: Array<{ opts: PanelOptions; proxy: PanelHandle; cur: PanelHandle | null }> = [];
   private helpClose: (() => void) | null = null;
+  private hudTimer = 0;
   private placesReady!: Promise<void>;
   readonly headless: boolean;
 
@@ -174,7 +179,11 @@ class UIApp {
     this.bindGlobal();
     ctx.onUpdate((dt) => this.update(dt), 500);
     for (const ev of ['controller', 'controller:added', 'service:pathtracer']) ctx.events.on(ev, () => this.modes?.refresh());
-    ctx.events.on('controller', () => this.touch?.setFlyButtons(ctx.controller.name === 'fly'));
+    ctx.events.on('controller', () => {
+      this.touch?.setFlyButtons(ctx.controller.name === 'fly');
+      this.syncControllerClass();
+    });
+    this.syncControllerClass();
   }
 
   private buildChrome(): void {
@@ -228,7 +237,11 @@ class UIApp {
       void x; void z;
     });
     this.minimap.el.classList.toggle('nv-hidden', !this.prefs.minimap);
-    this.modes = new ModeBar(ctx, chrome, (m) => this.toasts?.show(m, { key: 'mode' }), () => this.flight.cancel());
+    this.modes = new ModeBar(ctx, chrome, (m, mode) => {
+      // walk/drive: the physics module shows its own (more complete) key hint at the bottom
+      if (mode && mode !== 'fly' && document.querySelector('.phx-hint')) return;
+      this.toasts?.show(m, { key: 'mode' });
+    }, () => this.flight.cancel());
     this.stats = new Stats(ctx, chrome);
     this.stats.setVisible(this.prefs.stats || ctx.settings.debug);
     this.statsBtn.setActive(this.stats.visible);
@@ -437,6 +450,7 @@ class UIApp {
     if (this.helpClose) { this.helpClose(); return; }
     const done = openHelp(this.root!, {
       walk: this.ctx.controllers.has('walk'), drive: this.ctx.controllers.has('drive'), photo: !!this.ctx.get('pathtracer'),
+      touch: !!this.touch,
     });
     this.helpClose = () => { done(); this.helpClose = null; };
     const obs = new MutationObserver(() => { if (!this.root!.querySelector('.nv-modal-bg')) { this.helpClose = null; obs.disconnect(); } });
@@ -463,7 +477,7 @@ class UIApp {
       const bi = b?.infoAt?.(p.x, p.z);
       if (bi && p.y > g - 1) { info.building = bi; bIndex = bi.index ?? -1; }
     } catch { /* ignore */ }
-    const poi = (it: PlaceItem) => it.k !== 'street' && it.k !== 'district' && it.k !== 'settlement' && it.k !== 'water' && it.k !== 'bus_stop';
+    const poi = (it: PlaceItem) => !NON_POI.has(it.k);
     // a POI belongs to the picked building if it lies inside the same footprint; otherwise only very close ones
     let place: PlaceItem | null = null;
     if (bIndex >= 0) {
@@ -477,7 +491,7 @@ class UIApp {
     }
     if (!place) place = this.gz.nearest(p.x, p.z, poi, info.building ? 12 : 25)?.item ?? null;
     info.place = place;
-    const loc = this.hud?.locationAt(p.x, p.z, 0);
+    const loc = this.hud?.locationAt(p.x, p.z, 150); // ~120 m street search radius
     info.street = loc?.street;
     info.area = loc?.area;
     try { info.ground = ctx.get<any>('terrain')?.groundTypeAt?.(p.x, p.z); } catch { /* ignore */ }
@@ -549,13 +563,39 @@ class UIApp {
     });
   }
 
+  /** Root class per active controller (CSS moves chrome out of the way of mode-specific HUDs). */
+  private syncControllerClass(): void {
+    const r = this.root;
+    if (!r) return;
+    const name = this.ctx.controller.name;
+    for (const c of [...r.classList]) if (c.startsWith('nv-ctl-') && c !== `nv-ctl-${name}`) r.classList.remove(c);
+    r.classList.add(`nv-ctl-${name}`);
+  }
+
+  /**
+   * Keep clear of other modules' HUD elements (read-only DOM check): the physics key hint
+   * (bottom centre) lifts the mode bar, the drive dashboard (bottom right) lifts the status line.
+   */
+  private avoidForeignHud(): void {
+    const r = this.root;
+    if (!r) return;
+    r.classList.toggle('nv-lift-modes', !!document.querySelector('.phx-hint.on'));
+    r.classList.toggle('nv-lift-status', !!document.querySelector('.phx-dash.on'));
+    // photo mode (path tracer): its own overlay sits at the top centre; keep the frame clean
+    let photo = false;
+    try { photo = !!this.ctx.get<any>('pathtracer')?.active; } catch { /* optional */ }
+    r.classList.toggle('nv-photo', photo);
+  }
+
   // ------------------------------------------------------------------ frame
   private update(dt: number): void {
+    this.hudTimer -= dt;
+    if (this.hudTimer <= 0) { this.hudTimer = 0.25; this.avoidForeignHud(); }
     try {
       this.labels?.update(dt);
       this.hud?.update(dt);
       this.minimap?.update(dt);
-      this.card?.update();
+      this.card?.update(dt);
       this.modes?.update(dt);
       this.tw?.update(dt, !!this.timePanel?.isOpen);
       this.stats?.update();

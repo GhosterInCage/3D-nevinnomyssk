@@ -102,7 +102,7 @@ vec3 bInterior(vec3 o, vec3 d, float w, float h, float depth, float rnd, float l
   vec3 lampC = lk < 0.55 ? vec3(1.0, 0.66, 0.34) : lk < 0.8 ? vec3(1.0, 0.8, 0.55) : vec3(0.9, 0.92, 0.95);
   if (bh11(rnd * 6.6) > 0.93) lampC = vec3(0.55, 0.65, 1.0); // TV glow
   float lamp = lit * (0.55 + 0.45 * smoothstep(h, 0.0, length(p - vec3(w * 0.5, h, -depth * 0.5)) * 0.6));
-  return col * (dayL + lamp * lampC * 0.2);
+  return col * (dayL + lamp * lampC * 0.13);
 }
 
 // ------------------------------------------------------------ one window (opening + recessed glass)
@@ -172,13 +172,13 @@ float bWindow(vec2 f, vec4 win, vec3 Vt, vec3 room, float rid, float px, float f
   float dist;
   vec3 inter;
   if (uDetail > 0.5 && px < 0.08) inter = bInterior(o, dir, room.x, room.y, 4.5, rid, lit, dist);
-  else inter = vec3(0.35, 0.3, 0.25) * (uDay * 0.06 + lit * 0.18);
+  else inter = vec3(0.35, 0.3, 0.25) * (uDay * 0.06 + lit * 0.12);
   float lk = bh11(rid * 8.8);
   vec3 lampC = lk < 0.55 ? vec3(1.0, 0.66, 0.34) : lk < 0.8 ? vec3(1.0, 0.8, 0.55) : vec3(0.9, 0.92, 0.95);
   // tulle diffuses daylight / lamp light
-  vec3 tulleCol = vec3(0.85, 0.84, 0.80) * (uDay * 0.07 + lit * lampC * 0.2);
+  vec3 tulleCol = vec3(0.85, 0.84, 0.80) * (uDay * 0.07 + lit * lampC * 0.13);
   inter = mix(inter, tulleCol, tulle);
-  vec3 curt = curtainCol * (uDay * 0.06 + lit * lampC * 0.14);
+  vec3 curt = curtainCol * (uDay * 0.06 + lit * lampC * 0.09);
   inter = mix(inter, curt, clamp(curtain, 0.0, 1.0));
   // glass: dark, glossy, slightly tilted per pane (varied reflections)
   vec2 tilt = (bh22(vec2(rid, rid * 1.3)) - 0.5) * 0.06;
@@ -399,6 +399,8 @@ void bSurface() {
     float wallKey = floor(vWPos.x * 0.02) * 7.0 + floor(vWPos.z * 0.02) * 13.0;
     bLitId = bh21(vec2(floor((col + mod(seed, 2.0)) / 2.0) + seed * 3.1, row * 7.0 + wallKey));
     bLitId = clamp(bLitId + (bh11(seed * 5.3) - 0.5) * 0.35, 0.0, 1.0);
+    // private houses: few rooms per facade, curtains / shutters drawn -> fewer visible lit windows
+    if (style == 1.0 || style == 2.0 || style == 15.0) bLitId = min(1.0, bLitId / 0.6);
     float frameType = bh11(rid * 2.3 + seed * 0.01);
     if (bh11(seed + 9.0) < 0.35) frameType = 0.3; // renovated building: all white PVC
     vec3 wallCol = alb;
@@ -411,7 +413,7 @@ void bSurface() {
       vec3 winAvg = vec3(0.035, 0.04, 0.05);
       alb = mix(alb, winAvg, cover * 0.9);
       rough = mix(rough, 0.3, cover);
-      emis += vec3(1.0, 0.7, 0.4) * lit * cover * 0.16;
+      emis += vec3(1.0, 0.7, 0.4) * lit * cover * 0.1;
     } else if (inGrid) {
       vec3 Vtl = Vt;
       bool door = false;
@@ -458,18 +460,41 @@ void bSurface() {
         float gl = exp(-length((f - vec2(cellW * 0.5, 2.8)) * vec2(1.2, 1.6)) * 1.5);
         emis += vec3(1.0, 0.78, 0.5) * gl * uNight * 0.18;
       } else if (px > 0.06) {
-        // mid distance: flat window rectangles (no parallax / interior / frames)
+        // mid distance: no parallax / interior, but frames stay visible as anti-aliased lines
+        // (averaging them into the pane made windows read as flat coloured tiles)
         float inW = bRect(f, win.xy, win.zw, px);
         float lit = step(bLitId, uLitFrac) * uNight;
         float lk = bh11(rid * 8.8);
         vec3 lampC = lk < 0.55 ? vec3(1.0, 0.66, 0.34) : lk < 0.8 ? vec3(1.0, 0.8, 0.55) : vec3(0.9, 0.92, 0.95);
-        vec3 frameAvg = frameType < 0.62 ? vec3(0.86) : frameType < 0.78 ? vec3(0.28, 0.16, 0.09) : vec3(0.6);
-        alb = mix(alb, mix(vec3(0.02), frameAvg, 0.18), inW);
-        rough = mix(rough, 0.12, inW);
+        vec3 frameCol = frameType < 0.62 ? vec3(0.86, 0.86, 0.84) : frameType < 0.78 ? vec3(0.28, 0.16, 0.09) :
+                        frameType < 0.95 ? vec3(0.70, 0.68, 0.62) : vec3(0.55, 0.57, 0.58);
+        float fw = frameType < 0.62 ? 0.065 : 0.05;
+        vec2 lp = f - win.xy;
+        vec2 sz = win.zw - win.xy;
+        float fr = 1.0 - bRect(lp, vec2(fw), sz - fw, px * 0.5);
+        for (int k = 1; k < 3; k++) {
+          if (float(k) < sashes) {
+            float mx = sz.x * float(k) / sashes;
+            fr = max(fr, bBox(lp.x, mx - fw * 0.6, mx + fw * 0.6, px * 0.5));
+          }
+        }
+        if (transom) fr = max(fr, bBox(lp.y, sz.y * 0.72 - fw * 0.5, sz.y * 0.72 + fw * 0.5, px * 0.5) * step(lp.x, sz.x / sashes));
+        fr = clamp(fr, 0.0, 1.0);
+        // curtains / tulle seen through the glass (a hint of the interior)
+        float cl = 0.35 * bh11(rid * 3.7), cr = 0.35 * bh11(rid * 5.3);
+        float curtain = clamp(step(lp.x, sz.x * cl) + step(sz.x * (1.0 - cr), lp.x), 0.0, 1.0);
+        float tulle = step(0.5, bh11(rid * 9.1)) * 0.5;
+        vec3 curtainCol = mix(vec3(0.75, 0.68, 0.52), vec3(0.45, 0.18, 0.14), step(0.7, bh11(rid * 2.1)));
+        vec3 inside = mix(vec3(0.012), vec3(0.05), tulle);
+        inside = mix(inside, curtainCol * 0.08, curtain * 0.8);
+        vec3 glassAlb = inside;
+        alb = mix(alb, mix(glassAlb, frameCol, fr), inW);
+        rough = mix(rough, mix(0.06, 0.5, fr), inW);
         metal = mix(metal, 0.0, inW);
-        emis += (vec3(0.3, 0.27, 0.22) * uDay * 0.05 + lampC * lit * 0.16) * inW;
-        bGlass = inW * 0.8;
-        nT = mix(nT, normalize(vec3((bh22(vec2(rid, rid * 1.3)) - 0.5) * 0.06, 1.0)), inW);
+        emis += (lampC * lit * mix(0.11, 0.08, tulle)) * inW * (1.0 - fr);
+        bGlass = inW * (1.0 - fr) * 0.85;
+        nT = mix(nT, normalize(vec3((bh22(vec2(rid, rid * 1.3)) - 0.5) * 0.06, 1.0)), inW * (1.0 - fr));
+        ao *= mix(1.0, 0.85, inW * smoothstep(win.w - 0.3, win.w, f.y));
       } else {
         bWindow(f, win, Vtl, room, rid, px, frameType, sashes, transom, wallCol, alb, rough, metal, nT, emis, ao);
       }
@@ -627,8 +652,12 @@ void bSurface() {
       float r = fract(q.x / 0.55);
       float seam = bBox(r * 0.55, 0.0, 0.03, px);
       nt = vec3((r < 0.05 ? 0.8 : 0.0) * (1.0 - farT), 0.0, 1.0);
-      alb = base * (0.88 + 0.18 * nl.r) * (1.0 - 0.2 * seam);
-      alb = mix(alb, vec3(0.35, 0.22, 0.14), smoothstep(0.7, 0.9, nl.g) * 0.4); // rust
+      alb = base * (0.9 + 0.12 * nl.r) * (1.0 - 0.2 * seam);
+      // rust: streaks running down individual sheets, more on old roofs (per-building seed)
+      float sheet = bh11(floor(q.x / 0.55) + seed * 3.1);
+      float rs = bNoiseL(vec2(q.x * 1.2, q.y * 0.08) + seed, 1.2, px).a;
+      float rustAmt = smoothstep(0.62, 0.9, rs) * step(0.55, sheet) * (0.25 + 0.5 * bh11(seed * 1.9));
+      alb = mix(alb, vec3(0.30, 0.17, 0.10), rustAmt * (1.0 - farT) * 0.6);
       metal = 0.35; rough = 0.5;
     } else if (style == 6.0) {
       // greenhouse glazing
@@ -822,4 +851,60 @@ void bSurface() {
     return;
   }
 }
+`;
+
+// Street-lamp pools on facades / roofs at night (roads module lamp grid, see
+// src/modules/roads/materials.ts rsLamps: 16 m cells, up to two lamps per cell
+// encoded as offsets, lamp heads ~9 m above the ground).
+export const LAMP_FN = /* glsl */ `
+#ifdef BLD_LAMPS
+uniform sampler2D rsLamp;
+uniform vec4 rsLampP;
+uniform vec3 rsLampCol0;
+uniform vec3 rsLampCol1;
+uniform float rsLampI;
+uniform vec4 rsReal[8];
+uniform sampler2D bHF;
+uniform vec3 bHFP; // half, res, n
+void bLamps(inout ReflectedLight reflectedLight, const in vec3 geometryPosition, const in vec3 geometryNormal,
+            const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material) {
+  if (uNight < 0.01) return;
+  vec2 g = (vWPos.xz - rsLampP.xy) * rsLampP.z;
+  ivec2 c = ivec2(floor(g));
+  int n = int(rsLampP.w);
+  if (c.x < 0 || c.y < 0 || c.x >= n || c.y >= n) return;
+  vec4 t = floor(texelFetch(rsLamp, c, 0) * 255.0 + 0.5);
+  if (t.g < 0.5 && t.a < 0.5) return;
+  vec2 huv = ((vWPos.xz + bHFP.x) / bHFP.y + 0.5) / bHFP.z;
+  float hy = vWPos.y - texture2D(bHF, huv).r;
+  if (hy > 16.0) return;
+  vec2 cc = (vec2(c) + 0.5) / rsLampP.z + rsLampP.xy;
+  vec3 wn = normalize(vWNrm);
+  for (int k = 0; k < 2; k++) {
+    vec2 q = k == 0 ? t.rg : t.ba;
+    if (q.y < 0.5) continue;
+    float typ = mod(q.x, 2.0);
+    vec2 off = vec2(floor(q.x * 0.5), floor(q.y * 0.5)) * 0.5 - 32.0;
+    vec3 L = vec3(cc.x + off.x - vWPos.x, 9.0 - hy, cc.y + off.y - vWPos.z);
+    float d2 = max(dot(L, L), 1.0);
+    vec3 Ld = L * inversesqrt(d2);
+    // facing test on the geometric normal (walls behind the lamp stay dark)
+    if (dot(Ld, wn) <= 0.0) continue;
+    float cosE = Ld.y;
+    // same cut-off luminaire as the roads' ground pools; roofs (seen from above) get less
+    float I = rsLampI * uNight * (0.25 + 0.75 * cosE * cosE) * smoothstep(0.2, 0.5, cosE);
+    I *= 0.8 * mix(1.0, 0.35, smoothstep(0.3, 0.8, wn.y));
+    vec2 lp = cc + off;
+    for (int r = 0; r < 8; r++) {
+      vec2 dd = rsReal[r].xy - lp;
+      if (dot(dd, dd) < 0.5) I *= 1.0 - rsReal[r].z;
+    }
+    IncidentLight dl;
+    dl.color = (typ > 0.5 ? rsLampCol1 : rsLampCol0) * (I / d2);
+    dl.direction = normalize((viewMatrix * vec4(Ld, 0.0)).xyz);
+    dl.visible = true;
+    RE_Direct(dl, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+  }
+}
+#endif
 `;

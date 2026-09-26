@@ -19,7 +19,7 @@ export class ModeBar {
   private badge: HTMLSpanElement;
   private timer = 0;
 
-  constructor(private ctx: AppContext, parent: HTMLElement, private toast: (m: string) => void, private beforeSwitch: () => void) {
+  constructor(private ctx: AppContext, parent: HTMLElement, private toast: (m: string, mode?: string) => void, private beforeSwitch: () => void) {
     this.el = h('div', { class: 'nv-modes nv-glass nv-i' });
     for (const m of MODES) {
       const b = h('button', { class: 'nv-mode', title: `${t(m.label)} (${m.key})`, html: `${m.icon}<span>${t(m.label)}</span><kbd>${m.key}</kbd>` }) as HTMLButtonElement;
@@ -48,7 +48,7 @@ export class ModeBar {
     const was = this.ctx.controller.name;
     if (this.ctx.setController(id) && was !== id) {
       const m = MODES.find((x) => x.id === id);
-      if (m) this.toast(t(m.hint));
+      if (m) this.toast(t(m.hint), m.id);
     }
     this.refresh();
   }
@@ -58,7 +58,12 @@ export class ModeBar {
     if (!pt) { this.toast(t('photoNA')); return; }
     try {
       if (pt.active) pt.stop();
-      else { this.beforeSwitch(); pt.start(); this.toast(t('photoOn')); }
+      else {
+        this.beforeSwitch();
+        // the path tracer shows its own status overlay; only explain when it has none
+        void Promise.resolve(pt.start()).catch(() => undefined);
+        if (!document.querySelector('.ptx-root')) setTimeout(() => { if (!document.querySelector('.ptx-root')) this.toast(t('photoOn')); }, 600);
+      }
     } catch (e) {
       console.error('[ui] pathtracer', e);
     }

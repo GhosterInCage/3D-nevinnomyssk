@@ -9,7 +9,7 @@ const k = (...keys: string[]) => keys.map((x) => `<kbd>${x}</kbd>`).join('');
 const small = (svg: string) => svg.replace('width="20" height="20"', 'width="14" height="14"');
 const ic = (svg: string, txt: string) => `<span style="display:inline-flex;align-items:center;gap:5px">${small(svg)}${txt}</span>`;
 
-export function openHelp(parent: HTMLElement, opts: { walk: boolean; drive: boolean; photo: boolean }): () => void {
+export function openHelp(parent: HTMLElement, opts: { walk: boolean; drive: boolean; photo: boolean; touch?: boolean }): () => void {
   const ru = getLang() === 'ru';
   const sec = (icon: string, title: string, rows: Row[]) =>
     h('div', null, h('h4', { html: `${icon}${title}` }),
@@ -29,15 +29,21 @@ export function openHelp(parent: HTMLElement, opts: { walk: boolean; drive: bool
     [k('W', 'A', 'S', 'D'), 'идти', 'walk'],
     [k('Shift'), 'бег', 'run'],
     [k('Space'), 'прыжок', 'jump'],
+    [k('C'), 'присесть', 'crouch'],
+    [ic(ICON.mouse, ru ? 'клик' : 'click'), 'захват мыши (Esc — отпустить)', 'lock the mouse (Esc to release)'],
+    [k('F') + k('G'), 'бросить мяч / ящик', 'throw a ball / drop a crate'],
   ];
   const drive: Row[] = [
     [k('W') + k('S'), 'газ / тормоз', 'throttle / brake'],
     [k('A') + k('D'), 'руль', 'steer'],
     [k('Space'), 'ручной тормоз', 'handbrake'],
+    [k('V'), 'камера', 'camera view'],
+    [k('R'), 'вернуть на дорогу', 'back on the road'],
   ];
   const app: Row[] = [
     [k('/'), 'поиск мест и улиц', 'search places & streets'],
     [k('1') + k('2') + k('3') + k('4'), 'режимы: полёт / пешком / авто / фото', 'modes: fly / walk / drive / photo'],
+    ...(opts.photo ? [[k('P'), 'фоторежим (трассировка путей), Esc — выход', 'photo mode (path tracing), Esc to leave'] as Row] : []),
     [k('M'), 'большая карта', 'big map'],
     [k('T'), 'время и погода', 'time & weather'],
     [k('L'), 'подписи вкл/выкл', 'labels on/off'],
@@ -52,12 +58,14 @@ export function openHelp(parent: HTMLElement, opts: { walk: boolean; drive: bool
     [ic(ICON.up, '') + ic(ICON.down, ''), 'вверх / вниз (полёт)', 'up / down (fly)'],
     [ic(ICON.hand, ru ? 'двойное касание' : 'double tap'), 'подлететь к точке', 'fly to point'],
   ];
+  const touchSec = sec(ICON.hand, ru ? 'Сенсорный экран' : 'Touch', touch);
   const cols = h('div', { class: 'nv-help-cols' },
+    opts.touch ? touchSec : null,
     sec(ICON.fly, t('fly'), fly),
     sec(ICON.keyboard, ru ? 'Интерфейс' : 'Interface', app),
     opts.walk ? sec(ICON.walk, t('walk'), walk) : null,
     opts.drive ? sec(ICON.car, t('drive'), drive) : null,
-    sec(ICON.hand, ru ? 'Сенсорный экран' : 'Touch', touch),
+    opts.touch ? null : touchSec,
   );
   const close = h('button', { class: 'nv-x nv-i', title: t('close'), html: ICON.x });
   const card = h('div', { class: 'nv-help nv-glass nv-i' }, close,

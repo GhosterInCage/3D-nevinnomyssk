@@ -19,10 +19,12 @@ import { Geo, P, F, col } from './builder';
 import { createLmMaterial, makeLmUniforms, type LmUniforms } from './material';
 import { Glows, makeFlame, updateFlame, Plumes, type GlowSpec } from './effects';
 import { C, latticeMast, type Frame } from './structures';
-import { buildGres, buildAzot, groundMax } from './industry';
+import { buildGres, buildAzotSteps, groundMax } from './industry';
 import { buildChurch } from './church';
 import { buildMemorial, buildStation, buildStand, floodMast, buildPitch, buildWeir, buildRegulator, buildPowerhouse, textTexture, buildFountain, buildArena } from './civic';
 import { WindFarm, type Turbine } from './wind';
+import { buildSubstation, type SubstationSpec } from './substation';
+import { FerrisWheel } from './ferris';
 
 interface Item {
   name: string;
@@ -143,13 +145,24 @@ class Landmarks {
     this.data = await fetchJSON<any>('landmarks/landmarks.json');
     mark('data');
     const D = this.data;
-    const step = async (name: string, fn: () => void) => {
+    const yieldFrame = () => (ctx.settings.shot ? Promise.resolve() : new Promise((r) => setTimeout(r, 0)));
+    const step = async (name: string, fn: () => void | Generator<void>) => {
       const t0 = performance.now();
-      try { fn(); } catch (e) { console.error(`[landmarks] ${name} failed`, e); }
+      try {
+        const r = fn();
+        // generators: build in slices, yielding to the renderer between them (interactive mode)
+        if (r && typeof (r as Generator<void>).next === 'function') {
+          const it = r as Generator<void>;
+          let t1 = performance.now();
+          while (!it.next().done) {
+            if (performance.now() - t1 > 12) { await yieldFrame(); t1 = performance.now(); }
+          }
+        }
+      } catch (e) { console.error(`[landmarks] ${name} failed`, e); }
       const ms = performance.now() - t0;
       if (ms > 200) console.info(`[landmarks] ${name} built in ${Math.round(ms)} ms`);
       // yield between landmarks in interactive mode (in screenshot mode every frame is expensive)
-      if (!ctx.settings.shot) await new Promise((r) => setTimeout(r, 0));
+      await yieldFrame();
     };
     await step('gres', () => this.buildGres(D.gres));
     await step('azot', () => this.buildAzot(D.azot));
@@ -163,6 +176,8 @@ class Landmarks {
     await step('fountains', () => this.buildFountains(D.fountains));
     await step('arena', () => this.buildArena(D.arena));
     await step('masts', () => this.buildMasts(D.masts));
+    await step('substations', () => this.buildSubstations(D.substations));
+    await step('wheel', () => this.buildWheel(D.wheel));
     await step('wind', () => this.buildWind(D.turbines));
     await step('plumes', () => this.buildPlumes());
     mark('built');
@@ -203,6 +218,17 @@ class Landmarks {
     this.add('Невинномысская ГРЭС', fr, main, det, 450, d.main.x, d.main.z - 100, 400);
     this.hideIds.push(...d.hide);
     this.clearPolys.push(d.main.ring, d.tec.ring);
+    if (d.pgu?.ring) {
+      this.clearPolys.push(d.pgu.ring);
+      // HRSG + stack stand outside the hall footprint: plot between the hall and the stack
+      const U = d.pgu, cs = Math.cos(U.rot), sn = Math.sin(U.rot);
+      const dx = U.stack.x - U.x, dz = U.stack.z - U.z;
+      const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs, sg = lz >= 0 ? 1 : -1;
+      const ring: number[] = [];
+      for (const [a, b] of [[lx - 16, sg * U.wid / 2], [lx + 16, sg * U.wid / 2], [lx + 16, lz + sg * 8], [lx - 16, lz + sg * 8]]) ring.push(U.x + a * cs + b * sn, U.z - a * sn + b * cs);
+      this.hidePolys.push(ring);
+      this.clearPolys.push(ring);
+    }
     // the open-air boiler row, ducts and collector stand outside the main-building footprint:
     // remove any generic extrusions there as well
     {
@@ -216,7 +242,7 @@ class Landmarks {
     }
   }
 
-  private buildAzot(d: any): void {
+  private *buildAzot(d: any): Generator<void> {
     if (!d) return;
     // origin: first stack (tall items live in the global main mesh); cells & racks in 400 m tiles
     const s0 = d.stacks[0] ?? { x: 600, z: -2500 };
@@ -231,7 +257,7 @@ class Landmarks {
       if (!t) { t = { main: new Geo(), detail: new Geo(), cx: (i + 0.5) * TILE, cz: (j + 0.5) * TILE }; tiles.set(k, t); }
       return t;
     };
-    buildAzot(d, fr, main, det, tileOf);
+    yield* buildAzotSteps(d, fr, main, det, tileOf);
     this.add('Невинномысский Азот', fr, main, det, 300, s0.x, s0.z, 300);
     for (const [k, t] of tiles) this.add(`Азот ${k}`, fr, t.main, t.detail, TILE * 0.75, t.cx, t.cz, 0).mainRange = 5000;
     this.hideIds.push(...d.hide);
@@ -274,6 +300,9 @@ class Landmarks {
     this.group.add(fl);
     this.flames.push(fl);
     this.glowSpecs.push({ x: fx, y: fr.oy + flame[1] + 0.4, z: fz, color: new THREE.Color(2.2, 0.9, 0.25), size: 2.6, day: 0.35 });
+    // the flame lights the star, the wreaths and the obelisk base at night (landmark material term)
+    this.u.lmFlame.value.set(fx, fr.oy + flame[1] + 0.9, fz, 0);
+    this.hasFlame = true;
     // paved square: no trees, no bushes
     const ring: number[] = [];
     for (const [lx, lz] of [[-16, -10], [16, -10], [16, 10], [-16, 10]]) ring.push(m.x + lx * cs + lz * sn, m.z - lx * sn + lz * cs);
@@ -307,6 +336,7 @@ class Landmarks {
     }
   }
   nightSignMats: THREE.MeshStandardMaterial[] = [];
+  hasFlame = false;
 
   private buildStadium(s: any): void {
     if (!s) return;
@@ -341,19 +371,63 @@ class Landmarks {
     this.clearPolys.push(ring);
   }
 
+  private weirItem: Item | null = null;
+  private weirGlow: [number, number] = [0, 0];
+
+  /** Weir geometry (own flat deck, or piers rising into the roads module's bridge deck). */
+  private weirGeo(w: any, fr: Frame, deckTop: ((x: number, z: number) => number) | null): { g: Geo; d: Geo } {
+    const ox = w.line[0][0], oz = w.line[0][1];
+    const g = new Geo(), d = new Geo();
+    buildWeir(fr, g, d, w.line.map((p: number[]) => [p[0] - ox, p[1] - oz]), w.up, w.down, {
+      deckTop: deckTop ? (lx, lz) => deckTop(lx + ox, lz + oz) - fr.oy : null,
+      roadHalf: w.bridge?.half ?? 5.1,
+      piersS: w.bridge?.piers ?? [],
+    });
+    if (w.canal) buildRegulator(fr, g, d, w.canal.x - ox, w.canal.z - oz, w.canal.dir, w.up - 0.3, 30);
+    return { g, d };
+  }
+
   private buildWeir(w: any): void {
     if (!w || !w.line) return;
     const ox = w.line[0][0], oz = w.line[0][1];
     const fr = this.frame('weir', ox, oz);
     fr.oy = w.down - 1;
-    const g = new Geo(), d = new Geo();
-    buildWeir(fr, g, d, w.line.map((p: number[]) => [p[0] - ox, p[1] - oz]), w.up, w.down);
-    if (w.canal) {
-      // regulator ~20 m into the canal
-      const cx = w.canal.x - Math.cos(w.canal.dir) * 20 - ox, cz = w.canal.z - Math.sin(w.canal.dir) * 20 - oz;
-      buildRegulator(fr, g, d, cx, cz, w.canal.dir, w.up - 0.3, 30);
+    const g0 = this.glowSpecs.length;
+    const { g, d } = this.weirGeo(w, fr, null);
+    this.weirGlow = [g0, this.glowSpecs.length];
+    this.weirItem = this.add('Головное сооружение Невинномысского канала', fr, g, d, 150, ox - 30, oz + 70);
+    // the roads module draws the road bridge on top of the barrage: rebuild our part under its deck
+    if (w.bridge && this.ctx.settings.wants('roads')) {
+      const timeout = new Promise<void>((r) => setTimeout(r, 240000));
+      const p = this.ctx.need<any>('roads').then((roads) => {
+        try {
+          const br = roads.bridges?.().find((b: any) => b.id === w.bridge.id);
+          if (!br || typeof roads.heightAt !== 'function') return;
+          const top = (x: number, z: number) => roads.heightAt(x, z, br.id);
+          if (!Number.isFinite(top(ox, oz))) return;
+          const f2: Frame = { ...fr, glows: [], colliders: [] };
+          const r = this.weirGeo(w, f2, top);
+          this.replaceItem(this.weirItem!, fr, r.g, r.d);
+          // move the hoist-house lamp glows to the new gallery height
+          if (this.glows && f2.glows.length === this.weirGlow[1] - this.weirGlow[0]) this.glows.setPositions(this.weirGlow[0], f2.glows);
+          console.info('[landmarks] weir rebuilt under the roads bridge deck');
+        } catch (e) { console.warn('[landmarks] weir rebuild failed', e); }
+      });
+      this.ctx.pending(Promise.race([p, timeout]));
     }
-    this.add('Головное сооружение Невинномысского канала', fr, g, d, 140, ox - 30, oz + 70);
+  }
+
+  /** Swap the meshes of a landmark (e.g. after another module became available). */
+  private replaceItem(it: Item, fr: Frame, main: Geo, detail: Geo | null): void {
+    for (const o of [...it.main, ...it.detail]) {
+      this.group.remove(o);
+      (o as THREE.Mesh).geometry?.dispose();
+    }
+    it.main = []; it.detail = [];
+    const a = this.mesh(main, fr, `${it.name}:main`);
+    if (a) it.main.push(a);
+    if (detail) { const b = this.mesh(detail, fr, `${it.name}:detail`); if (b) it.detail.push(b); }
+    this.updateVisibility(true);
   }
 
   private buildGes4(s: any): void {
@@ -456,6 +530,33 @@ class Landmarks {
     for (const t of ts) this.colliders.push({ kind: 'cylinder', key: `lm:wt:${t.x}:${t.z}`, center: [t.x, t.y + 50, t.z], radius: 2.1, halfHeight: 50 });
   }
 
+  private buildSubstations(list: SubstationSpec[]): void {
+    const lim = this.ctx.heightfield.half - 60;
+    for (const s of list ?? []) {
+      if (Math.abs(s.x) > lim || Math.abs(s.z) > lim) continue;
+      const fr = this.frame('substation', s.x, s.z);
+      const r = buildSubstation(fr, this.mat, s);
+      for (const o of [...r.main, ...r.detail]) this.group.add(o);
+      this.items.push({ name: s.name ? `ПС ${s.name}` : `ПС ${Math.round(s.kv)} кВ`, x: s.x, z: s.z, r: Math.hypot(s.len, s.wid) / 2,
+        main: r.main, detail: r.detail, detailRange: -250, mainRange: 4000 });
+    }
+  }
+
+  wheel: FerrisWheel | null = null;
+  private buildWheel(w: any): void {
+    if (!w) return;
+    const y = this.ground(w.x, w.z) - 0.1;
+    this.wheel = new FerrisWheel(w.x, y, w.z, w.rot ?? 0, w.h ?? 25, this.mat);
+    this.group.add(this.wheel.group);
+    this.items.push({ name: 'Колесо обозрения', x: w.x, z: w.z, r: 20, main: [this.wheel.group], detail: [], detailRange: 0, mainRange: 7000 });
+    const cs = Math.cos(w.rot ?? 0), sn = Math.sin(w.rot ?? 0);
+    this.colliders.push({ kind: 'box', key: 'lm:wheel', center: [w.x, y + 7, w.z], halfExtents: [7, 7, 3.5], rotationY: w.rot ?? 0 });
+    const ring: number[] = [];
+    for (const [a, b] of [[-15, -8], [15, -8], [15, 8], [-15, 8]]) ring.push(w.x + a * cs + b * sn, w.z - a * sn + b * cs);
+    this.clearPolys.push(ring);
+    this.hidePolys.push(ring);
+  }
+
   private buildPlumes(): void {
     const D = this.data;
     const stacks: Array<{ x: number; y: number; z: number; strength: number; size: number }> = [];
@@ -463,6 +564,7 @@ class Landmarks {
     // gas-fired GRES: flue gas is nearly invisible in summer, condenses into a white plume in the cold
     const k = winter ? 1.0 : 0.4;
     for (const s of D.gres?.stacks ?? []) stacks.push({ x: s.x, y: this.ground(s.x, s.z) + s.h + 1.5, z: s.z, strength: 0.6 * k, size: s.r1 * 1.3 });
+    if (D.gres?.pgu?.stack) { const s = D.gres.pgu.stack; stacks.push({ x: s.x, y: this.ground(s.x, s.z) + s.h + 1.5, z: s.z, strength: 0.45 * k, size: s.r1 * 1.4 }); }
     for (const s of D.azot?.stacks ?? []) stacks.push({ x: s.x, y: this.ground(s.x, s.z) + s.h + 1.5, z: s.z, strength: winter ? 0.9 : 0.65, size: s.r1 * 1.4 });
     for (const p of D.azot?.prill ?? []) stacks.push({ x: p.x, y: this.ground(p.x, p.z) + p.h + 6, z: p.z, strength: winter ? 0.9 : 0.7, size: 6 });
     if (!stacks.length) return;
@@ -541,7 +643,13 @@ class Landmarks {
     const exposure = sky && Number.isFinite(sky.exposure) ? sky.exposure : ctx.renderer.toneMappingExposure || 1;
     if (this.glows) this.glows.update(env.night, env.elapsed, ctx.camera, ctx.height * ctx.pixelRatio, exposure);
     for (const f of this.flames) updateFlame(f, env.elapsed, exposure);
+    if (this.hasFlame) {
+      const t = env.elapsed;
+      const flick = 0.82 + 0.1 * Math.sin(t * 13.1) + 0.06 * Math.sin(t * 23.7 + 1.3) + 0.04 * Math.sin(t * 41.9);
+      this.u.lmFlame.value.w = (0.05 + 0.9 * env.night) * flick;
+    }
     if (this.wind) this.wind.update(dt, env.wind);
+    if (this.wheel && this.wheel.group.visible) this.wheel.update(dt);
     if (this.plumes) this.plumes.update(env.elapsed, env.wind, env.sunDirection, env.sunColor, env.sunIntensity, env.night);
     for (const m of this.nightSignMats) m.emissiveIntensity = env.night * ((m.userData as any).nightEmissive ?? 0.5);
   }

@@ -29,7 +29,7 @@ const T = (r: number, g: number, b: number): [number, number, number] => [r, g, 
 
 export const SPECIES: SpeciesDef[] = [
   {
-    id: 0, name: 'poplar_italica', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.95, 0.93, 0.88), leafTint: T(0.95, 1.0, 0.92), translucency: 0.55, roughness: 0.80,
+    id: 0, name: 'poplar_italica', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.6, 0.58, 0.54), leafTint: T(0.95, 1.0, 0.92), translucency: 0.55, roughness: 0.80,
     gen: { kind: 'broadleaf', seed: 101, height: 22, crown: 5.4, envelope: 'column', crownBase: 0.03, points: 1000, segment: 0.55, influence: 2.4, kill: 0.9, tropism: 0.6, trunkRadius: 0.32, tipRadius: 0.012, leafSize: 1.0, leafDensity: 4.06, leafCell: C.poplar, leafTilt: 0.45, clumps: 12, clumpSize: 0.55 },
   },
   {
@@ -37,11 +37,11 @@ export const SPECIES: SpeciesDef[] = [
     gen: { kind: 'broadleaf', seed: 102, height: 23, crown: 13, envelope: 'irregular', crownBase: 0.32, points: 1000, segment: 0.75, influence: 4.2, kill: 1.3, tropism: 0.12, trunkRadius: 0.48, leafSize: 1.35, leafDensity: 3.62, leafCell: C.poplar, clumps: 9, clumpSize: 0.36, lean: 0.12 },
   },
   {
-    id: 2, name: 'poplar_white', kind: 'tree', bark: 'willow', barkTint: T(1.35, 1.35, 1.3), leafTint: T(1.0, 1.05, 1.0), translucency: 0.5, roughness: 0.88,
+    id: 2, name: 'poplar_white', kind: 'tree', bark: 'willow', barkTint: T(1.0, 1.0, 0.97), leafTint: T(1.0, 1.05, 1.0), translucency: 0.5, roughness: 0.88,
     gen: { kind: 'broadleaf', seed: 103, height: 21, crown: 12, envelope: 'dome', crownBase: 0.3, points: 950, segment: 0.7, influence: 4.0, kill: 1.25, tropism: 0.14, trunkRadius: 0.45, leafSize: 1.3, leafDensity: 3.62, leafCell: C.whitePoplar, clumps: 9, clumpSize: 0.38, lean: 0.12 },
   },
   {
-    id: 3, name: 'willow', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.85, 0.8, 0.72), leafTint: T(1.0, 1.0, 0.95), translucency: 0.6, roughness: 0.93,
+    id: 3, name: 'willow', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.62, 0.57, 0.5), leafTint: T(1.0, 1.0, 0.95), translucency: 0.6, roughness: 0.93,
     gen: { kind: 'broadleaf', seed: 104, height: 15, crown: 13, envelope: 'weeping', crownBase: 0.2, stems: 2, lean: 0.25, points: 720, segment: 0.6, influence: 3.6, kill: 1.1, tropism: -0.05, trunkRadius: 0.42, leafSize: 1.2, leafDensity: 2.9, leafCell: C.willow, leafDroop: 0.45, leafTilt: 0.5, clumps: 9, clumpSize: 0.4 },
   },
   {
@@ -53,15 +53,15 @@ export const SPECIES: SpeciesDef[] = [
     gen: { kind: 'broadleaf', seed: 106, height: 16, crown: 11, envelope: 'ovate', crownBase: 0.2, points: 950, segment: 0.6, influence: 3.4, kill: 1.0, tropism: 0.1, trunkRadius: 0.42, leafSize: 1.45, leafDensity: 3.12, leafCell: C.chestnut, clumps: 12, clumpSize: 0.42 },
   },
   {
-    id: 6, name: 'linden', kind: 'tree', bark: 'willow', barkTint: T(0.8, 0.78, 0.74), leafTint: T(1.0, 1.0, 0.92), translucency: 0.5, roughness: 0.80,
+    id: 6, name: 'linden', kind: 'tree', bark: 'willow', barkTint: T(0.56, 0.53, 0.5), leafTint: T(1.0, 1.0, 0.92), translucency: 0.5, roughness: 0.80,
     gen: { kind: 'broadleaf', seed: 107, height: 18, crown: 10, envelope: 'ovate', crownBase: 0.22, points: 1000, segment: 0.6, influence: 3.2, kill: 1.0, tropism: 0.15, trunkRadius: 0.38, leafSize: 1.15, leafDensity: 3.92, leafCell: C.linden, clumps: 12, clumpSize: 0.42 },
   },
   {
-    id: 7, name: 'maple', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.7, 0.68, 0.64), leafTint: T(1.0, 1.0, 0.92), translucency: 0.5, roughness: 0.80,
+    id: 7, name: 'maple', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.55, 0.53, 0.5), leafTint: T(1.0, 1.0, 0.92), translucency: 0.5, roughness: 0.80,
     gen: { kind: 'broadleaf', seed: 108, height: 14, crown: 10.5, envelope: 'round', crownBase: 0.22, points: 900, segment: 0.55, influence: 3.0, kill: 0.95, tropism: 0.12, trunkRadius: 0.34, leafSize: 1.15, leafDensity: 3.12, leafCell: C.maple, clumps: 10, clumpSize: 0.4 },
   },
   {
-    id: 8, name: 'boxelder', kind: 'tree', bark: 'willow', barkTint: T(0.78, 0.76, 0.66), leafTint: T(0.85, 0.95, 0.8), translucency: 0.6, roughness: 0.88,
+    id: 8, name: 'boxelder', kind: 'tree', bark: 'willow', barkTint: T(0.6, 0.58, 0.5), leafTint: T(0.85, 0.95, 0.8), translucency: 0.6, roughness: 0.88,
     gen: { kind: 'broadleaf', seed: 109, height: 10, crown: 9, envelope: 'irregular', crownBase: 0.16, stems: 3, lean: 0.3, points: 700, segment: 0.45, influence: 2.6, kill: 0.85, tropism: 0.06, trunkRadius: 0.22, leafSize: 1.0, leafDensity: 3.33, leafCell: C.robinia, leafTilt: 0.7, clumps: 7, clumpSize: 0.36 },
   },
   {
@@ -69,7 +69,7 @@ export const SPECIES: SpeciesDef[] = [
     gen: { kind: 'broadleaf', seed: 110, height: 13, crown: 9.5, envelope: 'vase', crownBase: 0.3, points: 850, segment: 0.5, influence: 2.8, kill: 0.9, tropism: 0.1, trunkRadius: 0.3, leafSize: 0.95, leafDensity: 3.77, leafCell: C.elm, leafTilt: 0.6, clumps: 9, clumpSize: 0.3, lean: 0.12 },
   },
   {
-    id: 10, name: 'walnut', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.95, 0.93, 0.9), leafTint: T(0.98, 1.0, 0.92), translucency: 0.5, roughness: 0.80,
+    id: 10, name: 'walnut', kind: 'tree', variants: 2, bark: 'willow', barkTint: T(0.78, 0.76, 0.73), leafTint: T(0.98, 1.0, 0.92), translucency: 0.5, roughness: 0.80,
     gen: { kind: 'broadleaf', seed: 111, height: 15, crown: 14, envelope: 'dome', crownBase: 0.2, points: 900, segment: 0.65, influence: 3.8, kill: 1.2, tropism: 0.05, trunkRadius: 0.42, leafSize: 1.5, leafDensity: 3.33, leafCell: C.walnut, clumps: 9, clumpSize: 0.36 },
   },
   {
@@ -85,7 +85,7 @@ export const SPECIES: SpeciesDef[] = [
     gen: { kind: 'broadleaf', seed: 114, height: 19, crown: 15, envelope: 'dome', crownBase: 0.26, points: 1000, segment: 0.7, influence: 3.8, kill: 1.15, tropism: 0.02, trunkRadius: 0.55, leafSize: 1.4, leafDensity: 2.88, leafCell: C.oak, leafTilt: 0.6, clumps: 9, clumpSize: 0.35, lean: 0.1 },
   },
   {
-    id: 14, name: 'ash', kind: 'tree', bark: 'willow', barkTint: T(0.85, 0.84, 0.8), leafTint: T(0.9, 0.98, 0.86), translucency: 0.6, roughness: 0.84,
+    id: 14, name: 'ash', kind: 'tree', bark: 'willow', barkTint: T(0.6, 0.58, 0.55), leafTint: T(0.9, 0.98, 0.86), translucency: 0.6, roughness: 0.84,
     gen: { kind: 'broadleaf', seed: 115, height: 20, crown: 11.5, envelope: 'ellipsoid', crownBase: 0.35, points: 850, segment: 0.7, influence: 3.8, kill: 1.25, tropism: 0.15, trunkRadius: 0.4, leafSize: 1.3, leafDensity: 3.19, leafCell: C.robinia, leafTilt: 0.65, clumps: 8, clumpSize: 0.33 },
   },
   {
@@ -97,7 +97,7 @@ export const SPECIES: SpeciesDef[] = [
     gen: { kind: 'conifer', style: 'pine', seed: 117, height: 16, crown: 7.5, crownBase: 0.45, trunkRadius: 0.3, tipRadius: 0.012, leafSize: 1.05, leafDensity: 1.7, leafCell: C.pine },
   },
   {
-    id: 17, name: 'spruce', kind: 'tree', bark: 'pine', barkTint: T(0.7, 0.62, 0.58), leafTint: T(0.78, 0.9, 0.84), translucency: 0.25, roughness: 0.88,
+    id: 17, name: 'spruce', kind: 'tree', bark: 'pine', barkTint: T(0.7, 0.62, 0.58), leafTint: T(0.62, 0.86, 0.6), translucency: 0.25, roughness: 0.88,
     gen: { kind: 'conifer', style: 'spruce', seed: 118, height: 14, crown: 6.0, crownBase: 0.03, trunkRadius: 0.28, tipRadius: 0.01, leafSize: 0.95, leafDensity: 1.9, leafCell: C.spruce },
   },
   {
@@ -105,7 +105,7 @@ export const SPECIES: SpeciesDef[] = [
     gen: { kind: 'conifer', style: 'thuja', seed: 119, height: 5.5, crown: 2.0, crownBase: 0.03, trunkRadius: 0.1, tipRadius: 0.008, leafSize: 0.65, leafDensity: 2.4, leafCell: C.thuja },
   },
   {
-    id: 19, name: 'alder', kind: 'tree', bark: 'willow', barkTint: T(0.6, 0.58, 0.55), leafTint: T(0.85, 0.95, 0.85), translucency: 0.45, roughness: 0.80,
+    id: 19, name: 'alder', kind: 'tree', bark: 'willow', barkTint: T(0.46, 0.44, 0.42), leafTint: T(0.85, 0.95, 0.85), translucency: 0.45, roughness: 0.80,
     gen: { kind: 'broadleaf', seed: 120, height: 15, crown: 8, envelope: 'ovate', crownBase: 0.25, points: 800, segment: 0.55, influence: 2.9, kill: 0.95, tropism: 0.16, trunkRadius: 0.3, leafSize: 1.05, leafDensity: 3.77, leafCell: C.shrub, clumps: 9, clumpSize: 0.4 },
   },
   // ------------------------------------------------ shrubs

@@ -172,6 +172,8 @@ export class Forest {
       ? new LodSet([mk(model.lod0.bark, false, fade0, 0), mk(model.lod0.leaves, true, fade0, 0)], this.group, 64, true, `veg-${def.name}-lod0`)
       : null;
     const lod1 = new LodSet([mk(model.lod1.bark, false, fade1, 1), mk(model.lod1.leaves, true, fade1, 1)], this.group, 256, true, `veg-${def.name}-lod1`);
+    // shrubs and hedges are small: skip them in the water mirror pass (trees stay: bank reflections)
+    if (!isTree) for (const set of [lod0, lod1]) for (const m of set?.meshes ?? []) m.userData.noReflect = true;
     const rt: SpeciesRT = { def, model, slot, lod0, lod1, isTree, fade0, fade1 };
     this.species.set(def.id * 8 + variant, rt);
     const arr = this.variants.get(def.id) ?? [];
@@ -322,6 +324,7 @@ export class Forest {
     this.frustum.setFromProjectionMatrix(this.projScreen);
     for (const s of this.species.values()) { if (s.lod0) s.lod0.count = 0; s.lod1.count = 0; }
     const d = this.data, hf = this.ctx.heightfield;
+    const mirror = !!this.ctx.get('water');
     const range = Math.max(p.R1, p.S1) + 30;
     const agl = P.y - hf.sample(P.x, P.z);
     let n0 = 0, n1 = 0;
@@ -354,7 +357,12 @@ export class Forest {
           }
           this.sphere.center.set(x, y + h * 0.5, z);
           this.sphere.radius = Math.max(h, d.w[k]) * 0.65 + 1;
-          if (!this.frustum.intersectsSphere(this.sphere)) continue;
+          if (!this.frustum.intersectsSphere(this.sphere)) {
+            // the water mirror pass reuses these lists: keep trees whose reflection is in view
+            if (!mirror || !sp.isTree) continue;
+            this.sphere.center.y = y - h * 0.5;
+            if (!this.frustum.intersectsSphere(this.sphere)) continue;
+          }
           const sY = h / sp.model.height;
           let sXZ = d.w[k] / sp.model.crown;
           sXZ = Math.min(Math.max(sXZ, sY * 0.65), sY * 1.5);

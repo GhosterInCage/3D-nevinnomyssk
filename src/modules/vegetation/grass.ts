@@ -176,6 +176,7 @@ export class Grass {
 
   constructor(private ctx: AppContext, private bits: Uint8Array, cover: THREE.Texture, type: THREE.Texture, ortho: THREE.Texture, quality: string, densityMul: number) {
     this.group.name = 'vegetation-grass';
+    this.group.userData.noReflect = true;
     this.noGrowData = new Uint8Array(this.WIN * this.WIN);
     this.noGrowTex = new THREE.DataTexture(this.noGrowData, this.WIN, this.WIN, THREE.RedFormat, THREE.UnsignedByteType);
     this.noGrowTex.magFilter = THREE.LinearFilter;

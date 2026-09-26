@@ -11,6 +11,7 @@ import { DriveController } from './drive';
 import { Toys } from './toys';
 import { PhysicsHud } from './hud';
 import { CAR_COLORS } from './carModel';
+import { CarAudio } from './audio';
 
 export interface PhysicsService {
   RAPIER: any;
@@ -37,26 +38,52 @@ export interface PhysicsService {
   readonly walker: { x: number; y: number; z: number; grounded: boolean; swimming: boolean } | null;
   resetCar(): void;
   setCarColor(c: string): void;
+  /** 0 chase, 1 far chase, 2 cockpit, 3 bonnet */
   setDriveCamera(mode: number): void;
   setHud(on: boolean): void;
+  /** procedural engine / tyre / wind sound in drive mode */
+  setAudio(on: boolean): void;
   /** scripted testing: run the simulation for `seconds` with held inputs */
   simulate(seconds: number, input?: { forward?: number; strafe?: number; sprint?: boolean; throttle?: number; brake?: number; steer?: number; handbrake?: boolean }): string;
   stats(): Record<string, number>;
 }
 
-let state: { sys: PhysicsSystem; walk: WalkController; drive: DriveController; toys: Toys; hud: PhysicsHud } | null = null;
+let nearCarHint: () => void = () => undefined;
+let state: { sys: PhysicsSystem; walk: WalkController; drive: DriveController; toys: Toys; hud: PhysicsHud; audio: CarAudio } | null = null;
 
 const mod: CityModule = {
   id: 'physics',
   async init(ctx: AppContext) {
+    const t0 = performance.now();
     const RAPIER = (await import('@dimforge/rapier3d-compat')).default;
+    const t1 = performance.now();
     await RAPIER.init();
+    const t2 = performance.now();
     const sys = new PhysicsSystem(ctx, RAPIER);
     const walk = new WalkController(sys);
     const drive = new DriveController(sys, ctx, walk);
     const toys = new Toys(sys, ctx);
     const hud = new PhysicsHud(ctx);
-    state = { sys, walk, drive, toys, hud };
+    const audio = new CarAudio(!ctx.settings.shot && ctx.settings.params.get('audio') !== '0');
+    state = { sys, walk, drive, toys, hud, audio };
+    // footsteps: hard on roads / paving / structures, soft on grass and soil
+    walk.onFootstep = (x, y, z, swimming, strength) => {
+      if (swimming) { audio.footstep('water', strength); return; }
+      let hard = false;
+      const g = sys.terrain.terrainY(x, z);
+      if (y > g + 0.25) hard = true; // on a bridge deck, roof, steps...
+      else {
+        const roads = ctx.get<any>('roads');
+        try { if (roads?.isRoad?.(x, z, 0.4, true, true)) hard = true; } catch { /* ignore */ }
+        if (!hard) {
+          const t = ctx.get<any>('terrain');
+          let kind = '';
+          try { kind = t?.groundTypeAt?.(x, z) ?? ''; } catch { /* ignore */ }
+          hard = kind === 'urban' || kind === 'rock' || kind === 'gravel' || kind === 'pebbles';
+        }
+      }
+      audio.footstep(hard ? 'hard' : 'soft', strength);
+    };
     ctx.registerController(walk);
     ctx.registerController(drive);
 
@@ -83,6 +110,19 @@ const mod: CityModule = {
       const g = sys.groundAt(pos.x, pos.z);
       if (pos.y < g + 0.5) pos.y = g + 0.5;
       toys.spawnCrate(pos, baseVel().multiplyScalar(0.8).add(h.clone().multiplyScalar(1.2)));
+    };
+
+    /** the walker stands next to the (upright) car */
+    const nearCar = (): boolean => {
+      const c = drive.car;
+      if (!c || !walk.isActive) return false;
+      return Math.hypot(c.pos.x - walk.pos.x, c.pos.z - walk.pos.z) < 4.5 && Math.abs(c.pos.y - walk.pos.y) < 2 && c.up.y > 0.5;
+    };
+    let nearShown = false;
+    nearCarHint = () => {
+      const n = nearCar();
+      if (n && !nearShown) hud.showHint(ctx.settings.shot ? '' : 'E — сесть в машину', 3);
+      nearShown = n;
     };
 
     const api: PhysicsService = {
@@ -119,8 +159,9 @@ const mod: CityModule = {
       },
       resetCar: () => drive.reset(),
       setCarColor: (c) => drive.car?.model.setColor(CAR_COLORS[c] ?? c),
-      setDriveCamera: (m) => { drive.camMode = Math.max(0, Math.min(2, m | 0)); },
+      setDriveCamera: (m) => { drive.camMode = Math.max(0, Math.min(3, m | 0)); },
       setHud: (on) => hud.setEnabled(on),
+      setAudio: (on) => audio.setEnabled(on),
       simulate(seconds, input = {}) {
         const n = Math.max(1, Math.round(seconds * 30));
         const dt = 1 / 30;
@@ -161,6 +202,11 @@ const mod: CityModule = {
       try {
         if (e.code === 'KeyF' && !e.shiftKey) throwBall();
         else if (e.code === 'KeyG' && !e.shiftKey) dropCrate();
+        else if (e.code === 'KeyE' && !e.repeat && (walk.isActive || drive.isActive)) {
+          // get in / out of the car
+          if (drive.isActive) ctx.setController('walk');
+          else if (nearCar()) ctx.setController('drive');
+        }
         else if (!ctx.get('ui') && /^Digit[123]$/.test(e.code)) ctx.setController(['fly', 'walk', 'drive'][+e.code.slice(5) - 1]);
       } catch (err) {
         console.error('[physics] key action failed', err);
@@ -182,23 +228,25 @@ const mod: CityModule = {
     ctx.events.on('controller', (name: string) => {
       if (name !== 'walk') walk.spawnHint = null;
       if (name === 'walk') hud.showHint(ctx.settings.shot ? '' : 'WASD — идти · Shift — бег · Space — прыжок · F — мяч · G — ящик · клик — мышь');
-      if (name === 'drive') hud.showHint(ctx.settings.shot ? '' : 'W/S — газ/тормоз · A/D — руль · Space — ручник · V — камера · R — на дорогу');
+      if (name === 'drive') hud.showHint(ctx.settings.shot ? '' : 'W/S — газ/тормоз · A/D — руль · Space — ручник · V — камера · R — на дорогу · E — выйти');
     });
     // roads give the terrain its asphalt lift: rebuild tiles once they appear
-    ctx.events.on('service:roads', () => sys.terrain.clear());
+    const rebuildGround = () => { sys.terrain.resetSources(); sys.terrain.clear(); };
+    ctx.events.on('service:roads', rebuildGround);
+    ctx.events.on('service:terrain', rebuildGround);
     ctx.events.once('ready', () => {
       const m = ctx.settings.params.get('mode');
       if (m && (m === 'walk' || m === 'drive') && ctx.controller.name !== m) {
         try { ctx.setController(m); } catch (e) { console.error('[physics] initial mode', e); }
       }
     });
-    console.info(`[physics] Rapier ${RAPIER.version?.() ?? ''} ready`);
+    console.info(`[physics] Rapier ${RAPIER.version?.() ?? ''} ready (import ${Math.round(t1 - t0)} ms, wasm init ${Math.round(t2 - t1)} ms, setup ${Math.round(performance.now() - t2)} ms)`);
   },
 
   update(dt: number, ctx: AppContext) {
     const s = state;
     if (!s) return;
-    const { sys, walk, drive, toys, hud } = s;
+    const { sys, walk, drive, toys, hud, audio } = s;
     const car = drive.car;
     const ours = ctx.controller === walk || ctx.controller === drive;
     if (!ours && (toys.anyAwake || (car && !car.body.isSleeping()))) sys.update(dt);
@@ -210,6 +258,13 @@ const mod: CityModule = {
       if (vis) car.render(sys.alpha);
     } else if (car) car.setVisible(true);
     hud.update(dt, ctx.controller.name, drive.isActive && car ? { kmh: car.speedKmh, rpm: car.rpm, gear: car.gear } : null);
+    if (walk.isActive && car && (ctx.frame & 7) === 0) nearCarHint();
+    try {
+      const on = drive.isActive && !!car;
+      audio.keepAlive = walk.isActive;
+      if (car && car.impact > 0) { if (on) audio.impact((car.impact - 1.2) / 6); car.impact = 0; }
+      audio.update(dt, on, on && car ? { rpm: car.rpm, throttle: car.throttleOut, speed: Math.abs(car.speed), slip: car.slip, submerged: car.submerged } : null);
+    } catch { /* audio is optional */ }
   },
 };
 export default mod;

@@ -103,7 +103,7 @@ export class PhysicsSystem {
   simulate(seconds: number): void {
     const n = Math.max(1, Math.round(seconds / this.dt));
     for (let i = 0; i < n; i++) {
-      if (i % 15 === 0) {
+      if (this.steps % 15 === 0 || i === 0) {
         this.gatherInterests();
         this.terrain.update(this.interests, true);
         this.statics.update(this.interests, true);

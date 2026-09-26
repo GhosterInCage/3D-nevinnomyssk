@@ -1,6 +1,6 @@
 // Drive mode: spawns (or re-enters) the player's car on the nearest road, maps keyboard / touch
 // input to the car, and runs a smooth chase camera with collision avoidance (plus a far chase and
-// a bonnet camera, V to cycle).
+// a cockpit and a bonnet camera, V to cycle).
 import * as THREE from 'three';
 import type { AppContext } from '../../core/context';
 import { getHeadingPitch, type Controller } from '../../core/controls';
@@ -11,8 +11,12 @@ import type { WalkController } from './walk';
 const CAMS = [
   { dist: 5.4, height: 1.25, pitch: 11 },
   { dist: 9.0, height: 2.1, pitch: 13 },
+  { dist: 0, height: 0, pitch: 0 }, // cockpit (driver's eyes)
   { dist: 0, height: 0, pitch: 0 }, // bonnet
 ];
+/** driver's eye in the car frame (+x = left / driver side, +z forward) and the bonnet camera */
+const EYE_COCKPIT = new THREE.Vector3(0.36, 1.2, -0.22);
+const EYE_BONNET = new THREE.Vector3(0, 1.13, 0.98);
 
 export class DriveController implements Controller {
   readonly name = 'drive';
@@ -87,7 +91,8 @@ export class DriveController implements Controller {
     const roads = ctx.get<any>('roads');
     let px = x, pz = z, py = NaN, fx = cfx, fz = cfz;
     const place = (qx: number, qz: number): boolean => {
-      const n = roads?.nearest?.(qx, qz, 400);
+      let n: RoadPick | null = null;
+      try { n = pickRoad(roads, qx, qz, 400); } catch (e) { console.warn('[physics] road pick failed', e); }
       if (!n) return false;
       let dx = n.dirX, dz = n.dirZ;
       if (dx * fx + dz * fz < 0) { dx = -dx; dz = -dz; }
@@ -198,15 +203,26 @@ export class DriveController implements Controller {
     const p = root.position;
     const cfg = CAMS[this.camMode];
     const kmh = car.speedKmh;
-    if (this.camMode === 2) {
-      // bonnet camera: rigidly attached, with softened pitch/roll
-      const eye = this.tmp.set(0, 1.13, 0.98).applyQuaternion(root.quaternion).add(p);
+    if (this.camMode >= 2) {
+      // cockpit / bonnet camera: rigidly attached, with softened pitch/roll (head stabilisation)
+      const cockpit = this.camMode === 2;
+      const local = this.tmp.copy(cockpit ? EYE_COCKPIT : EYE_BONNET);
+      if (cockpit) {
+        // follow the cosmetic body roll / pitch so the cabin does not slide around the eye
+        const b = car.model.body;
+        local.applyEuler(b.rotation).add(b.position);
+      }
+      const eye = local.applyQuaternion(root.quaternion).add(p);
       cam.position.copy(eye);
       const target = root.quaternion.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
-      if (!this.camInit || dt === 0) this.hoodQ.copy(target); else this.hoodQ.slerp(target, 1 - Math.exp(-dt * 14));
-      cam.quaternion.copy(this.hoodQ).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(-4)));
+      if (!this.camInit || dt === 0) this.hoodQ.copy(target); else this.hoodQ.slerp(target, 1 - Math.exp(-dt * (cockpit ? 10 : 14)));
+      // mouse look (head turn) in the cockpit
+      const look = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        THREE.MathUtils.degToRad(cockpit ? -5 : -4) - (cockpit ? this.orbitPitch * 0.8 : 0),
+        cockpit ? THREE.MathUtils.clamp(this.orbitYaw, -1.9, 1.9) : 0, 0, 'YXZ'));
+      cam.quaternion.copy(this.hoodQ).multiply(look);
       this.camInit = true;
-      const fov = 66 + Math.min(1, kmh / 160) * 8;
+      const fov = (cockpit ? 68 : 66) + Math.min(1, kmh / 160) * (cockpit ? 5 : 8);
       if (Math.abs(cam.fov - fov) > 0.05) { cam.fov = fov; cam.updateProjectionMatrix(); }
       return;
     }
@@ -244,6 +260,66 @@ export class DriveController implements Controller {
     const fov = 60 + Math.min(1, kmh / 150) * 9;
     if (Math.abs(cam.fov - fov) > 0.05) { cam.fov = fov; cam.updateProjectionMatrix(); }
   }
+}
+
+/** Extra "distance" (m) added per road class when choosing where to put the car. */
+const CLASS_PENALTY: Record<string, number> = {
+  motorway: 0, trunk: 0, primary: 0, secondary: 0, tertiary: 0, residential: 0, unclassified: 5, living_street: 10,
+  service: 45, track: 80,
+};
+
+export interface RoadPick { x: number; z: number; dirX: number; dirZ: number; width: number; edge: number; y: number; cls: string; dist: number }
+
+/**
+ * Nearest point on a drivable road, preferring real streets over parking aisles / driveways
+ * (service) and dirt tracks, and avoiding the ends of edges (junction interiors).
+ * Falls back to roads.nearest() when the graph is not available.
+ */
+export function pickRoad(roads: any, x: number, z: number, maxDist = 400): RoadPick | null {
+  const edges: any[] | undefined = roads?.graph?.edges;
+  if (!edges || !edges.length) {
+    const n = roads?.nearest?.(x, z, maxDist);
+    return n ? { x: n.x, z: n.z, dirX: n.dirX, dirZ: n.dirZ, width: n.width, edge: n.edge ?? -1, y: n.y, cls: n.cls, dist: n.dist ?? 0 } : null;
+  }
+  let best: RoadPick | null = null, bestScore = Infinity;
+  for (let ei = 0; ei < edges.length; ei++) {
+    const e = edges[ei];
+    const pen = CLASS_PENALTY[e.cls];
+    if (pen === undefined || e.tunnel) continue;
+    const p: Float32Array = e.points;
+    const np = p.length >> 1;
+    if (np < 2) continue;
+    // quick reject by the edge's first point (edges are short: split at every connector)
+    if (Math.abs(p[0] - x) > maxDist + 1500 || Math.abs(p[1] - z) > maxDist + 1500) continue;
+    let total = 0;
+    for (let k = 0; k < np - 1; k++) total += Math.hypot(p[k * 2 + 2] - p[k * 2], p[k * 2 + 3] - p[k * 2 + 1]);
+    if (total < 12) continue; // junction stubs
+    let acc = 0;
+    for (let k = 0; k < np - 1; k++) {
+      const ax = p[k * 2], az = p[k * 2 + 1], bx = p[k * 2 + 2], bz = p[k * 2 + 3];
+      const dx = bx - ax, dz = bz - az;
+      const L2 = dx * dx + dz * dz;
+      const L = Math.sqrt(L2);
+      if (L < 1e-3) continue;
+      let t = ((x - ax) * dx + (z - az) * dz) / L2;
+      // keep 6 m away from the edge ends (junctions), when the edge is long enough
+      const s0 = Math.min(6, total / 2 - 0.5);
+      const tMin = (s0 - acc) / L, tMax = (total - s0 - acc) / L;
+      t = Math.max(t, 0, tMin);
+      t = Math.min(t, 1, tMax);
+      if (t < 0 || t > 1) { acc += L; continue; }
+      const qx = ax + dx * t, qz = az + dz * t;
+      const d = Math.hypot(qx - x, qz - z);
+      const score = d + pen + (e.link ? 10 : 0);
+      if (d <= maxDist && score < bestScore) {
+        bestScore = score;
+        const y = e.y && e.y.length === np ? e.y[k] + (e.y[k + 1] - e.y[k]) * t : NaN;
+        best = { x: qx, z: qz, dirX: dx / L, dirZ: dz / L, width: e.width, edge: ei, y, cls: e.cls, dist: d };
+      }
+      acc += L;
+    }
+  }
+  return best;
 }
 
 function wrap(a: number): number {

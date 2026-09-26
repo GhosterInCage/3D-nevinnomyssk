@@ -44,6 +44,9 @@ export class PlaceCard {
   pickPoint: THREE.Vector3 | null = null;
   private marker: HTMLDivElement;
   private v = new THREE.Vector3();
+  /** Live "distance" value (the camera usually flies towards the place after the card opens). */
+  private dist: { el: HTMLElement; x: number; y: number | null; z: number } | null = null;
+  private distTimer = 0;
 
   constructor(private ctx: AppContext, private gz: Gazetteer, private flight: CameraFlight, private column: HTMLElement,
     layer: HTMLElement, private actions: {
@@ -59,6 +62,7 @@ export class PlaceCard {
   close(): void {
     this.el?.remove();
     this.el = null;
+    this.dist = null;
     this.current = null;
     this.pickPoint = null;
     this.marker.classList.add('nv-hidden');
@@ -80,7 +84,21 @@ export class PlaceCard {
   }
 
   private facts(rows: Array<[string, string]>): HTMLElement {
-    return h('dl', { class: 'nv-card-facts', html: rows.filter((r) => r[1]).map(([a, b]) => `<dt>${escapeHtml(a)}</dt><dd>${escapeHtml(b)}</dd>`).join('') });
+    const dl = h('dl', { class: 'nv-card-facts', html: rows.filter((r) => r[1]).map(([a, b]) => `<dt>${escapeHtml(a)}</dt><dd>${escapeHtml(b)}</dd>`).join('') });
+    if (this.dist) {
+      const label = getLang() === 'ru' ? 'Расстояние' : 'Distance';
+      const dt = [...dl.querySelectorAll('dt')].find((e) => e.textContent === label);
+      const dd = dt?.nextElementSibling as HTMLElement | null;
+      if (dd) this.dist.el = dd;
+    }
+    return dl;
+  }
+
+  private distanceText(): string {
+    const d = this.dist;
+    if (!d) return '';
+    const c = this.ctx.camera.position;
+    return fmtDist(d.y === null ? Math.hypot(c.x - d.x, c.z - d.z) : Math.hypot(c.x - d.x, c.y - d.y, c.z - d.z));
   }
 
   private coordRows(x: number, z: number): Array<[string, string]> {
@@ -127,8 +145,8 @@ export class PlaceCard {
     const addr = this.gz.address(it);
     if (addr) rows.push([getLang() === 'ru' ? 'Адрес' : 'Address', addr]);
     if (it.L && (it.k === 'street' || it.k === 'water')) rows.push([getLang() === 'ru' ? 'Протяжённость' : 'Length', fmtDist(it.L)]);
-    const cam = this.ctx.camera.position;
-    rows.push([getLang() === 'ru' ? 'Расстояние' : 'Distance', fmtDist(Math.hypot(cam.x - it.x, cam.z - it.z))]);
+    this.dist = { el: h('span'), x: it.x, y: null, z: it.z };
+    rows.push([getLang() === 'ru' ? 'Расстояние' : 'Distance', this.distanceText()]);
     rows.push(...this.coordRows(it.x, it.z));
     body.append(this.facts(rows), this.buttons(it.x, it.z, it));
   }
@@ -168,15 +186,21 @@ export class PlaceCard {
     if (p.street && title !== p.street) rows.push([t('street'), p.street]);
     if (p.area) rows.push([t('district'), p.area]);
     if (p.ground && !p.building && !p.isWater) rows.push([t('ground'), tr2(GROUND, p.ground)]);
-    const cam = this.ctx.camera.position;
-    rows.push([ru ? 'Расстояние' : 'Distance', fmtDist(Math.hypot(cam.x - p.x, cam.z - p.z, cam.y - p.y))]);
+    this.dist = { el: h('span'), x: p.x, y: p.y, z: p.z };
+    rows.push([ru ? 'Расстояние' : 'Distance', this.distanceText()]);
     rows.push(...this.coordRows(p.x, p.z));
     const { body } = this.frame(dot, title, kind, '');
     if (p.place?.d && !p.building) body.append(h('p', { text: this.gz.description(p.place) }));
     body.append(this.facts(rows), this.buttons(p.x, p.z, p.place ?? null));
   }
 
-  update(): void {
+  update(dt = 0): void {
+    this.distTimer -= dt;
+    if (this.el && this.dist && this.distTimer <= 0) {
+      this.distTimer = 0.25;
+      const s = this.distanceText();
+      if (this.dist.el.textContent !== s) this.dist.el.textContent = s;
+    }
     if (!this.pickPoint || !this.el) return;
     const cam = this.ctx.camera;
     const v = this.v.copy(this.pickPoint).applyMatrix4(cam.matrixWorldInverse);

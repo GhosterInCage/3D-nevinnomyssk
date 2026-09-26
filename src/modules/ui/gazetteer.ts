@@ -37,6 +37,7 @@ export interface SearchHit {
 }
 
 const KIND_KW: Record<string, string> = {
+  city: 'город city town',
   district: 'район микрорайон district neighbourhood neighborhood area',
   settlement: 'село посёлок поселок хутор деревня village settlement',
   landmark: 'достопримечательность landmark sight',
@@ -88,7 +89,15 @@ const CAT_EN: Record<string, string> = {
   'Федеральная трасса': 'highway motorway', 'Автодорога': 'road highway', 'Проезд': 'drive passage',
 };
 
-const STOP = new Set(['г', 'город', 'невинномысск', 'nevinnomyssk', 'ул', 'улица']);
+const STOP = new Set(['г', 'город', 'невинномысск', 'nevinnomyssk', 'ул', 'улица', 'д', 'дом']);
+const NUMERIC = /^\d+[а-яa-z]?$/;
+
+function merge(a: SearchHit[], b: SearchHit[]): SearchHit[] {
+  const seen = new Set(a.map((h) => h.item.id));
+  // typo hits rank below any exact hit
+  for (const h of b) if (!seen.has(h.item.id)) { seen.add(h.item.id); a.push({ ...h, score: h.score - 0.5 }); }
+  return a;
+}
 
 interface Entry {
   name: string;          // normalized full name (+aliases joined)
@@ -212,10 +221,16 @@ export class Gazetteer {
     const limit = opts.limit ?? 8;
     const coords = this.parseCoords(query);
     if (coords) return [{ item: coords, score: 100, dist: 0 }];
-    let hits = this.run(query, opts);
+    // exact/prefix matching first; typo-tolerant matching only when that finds (almost) nothing,
+    // so that e.g. "стадион" does not also list every "station"
+    let hits = this.run(query, opts, false);
+    if (hits.length < 3) hits = merge(hits, this.run(query, opts, true));
     if (hits.length === 0) {
       const swapped = swapLayout(query);
-      if (swapped !== query) hits = this.run(swapped, opts);
+      if (swapped !== query) {
+        hits = this.run(swapped, opts, false);
+        if (hits.length < 3) hits = merge(hits, this.run(swapped, opts, true));
+      }
     }
     hits.sort((a, b) => b.score - a.score || a.dist - b.dist);
     // collapse identical names (e.g. chain stores) to the nearest few
@@ -232,7 +247,7 @@ export class Gazetteer {
     return out;
   }
 
-  private run(query: string, opts: { x?: number; z?: number }): SearchHit[] {
+  private run(query: string, opts: { x?: number; z?: number }, fuzzy: boolean): SearchHit[] {
     const qn = normalize(query);
     if (!qn) return [];
     let qtoks = qn.split(' ').filter(Boolean);
@@ -257,7 +272,7 @@ export class Gazetteer {
           for (const tk of e.skel) {
             if (tk === qs) { best = Math.max(best, 3.4); break; }
             if (tk.startsWith(qs)) best = Math.max(best, 1.9 + qs.length / tk.length);
-            else if (qs.length >= 4 && tk[0] === qs[0]) {
+            else if (fuzzy && qs.length >= 4 && tk[0] === qs[0]) {
               // typo tolerance: 1 edit for 4-8 chars, 2 for longer words; first letter must match
               const maxE = qs.length >= 9 ? 2 : 1;
               const d = editDistance(qs, tk.slice(0, qs.length), maxE);
@@ -278,6 +293,8 @@ export class Gazetteer {
           if (best === 0) {
             for (const k of e.kw) {
               if (k === q || k === qs) {
+                // a matching house number makes this an address hit ("менделеева 34")
+                if (NUMERIC.test(q)) { best = 2; nameHits++; break; }
                 best = 0.8;
                 if (q.length >= 4 && !e.cat.length) nameHits++;
                 break;
@@ -286,13 +303,19 @@ export class Gazetteer {
             }
           }
         }
-        if (best === 0) { ok = false; break; }
+        if (best === 0) {
+          // house numbers ("менделеева 5") are optional: they only add score when the address matches
+          if (NUMERIC.test(q)) continue;
+          ok = false; break;
+        }
         total += best;
       }
       if (!ok || nameHits === 0) continue;
       const it = this.items[i];
       const dist = Math.hypot(it.x - cx, it.z - cz);
       let score = total + (6 - it.r) * 0.25 - Math.log10(1 + dist / 1000) * 0.4;
+      // stops are usually named after the street / place they serve: list the real thing first
+      if (it.k === 'bus_stop') score -= 0.9;
       if (e.name.startsWith(qn)) score += 1.2;
       out.push({ item: it, score, dist });
     }

@@ -438,6 +438,7 @@ function building(c: Ctx, i: number, gMin: number, gMax: number): void {
     if (apt || typ === Typ.School || typ === Typ.Kindergarten || typ === Typ.Public || typ === Typ.Commercial || typ === Typ.Mall) {
       facadeDetails(det, i, wallsInfo, fb, top, floorH, levels, typ, style, seed, flags, wr, wg, wb);
     }
+    try { gasPipes(det, i, wallsInfo, fb, gMin, floorH, levels, typ); } catch { /* cosmetic */ }
     if (parts.length === 0) roofEquipment(det, i, rings, wallsInfo, top, typ, seed, levels);
     else houseDetails(det, i, parts, roofShape, top, fb, gMin, overhang, (Math.max(3, pitchDeg) * Math.PI) / 180, typ, seed, rings, rr, rg, rb, wallsInfo);
   }
@@ -796,6 +797,55 @@ function facadeDetails(b: Buf, bi: number, walls: Array<any>, fb: number, top: n
     }
   }
   void top; void style; void wr; void wg; void wb;
+}
+
+// ------------------------------------------------------------------ yellow gas pipes (very characteristic in the region)
+/**
+ * Low-pressure gas pipes run on the outside of private houses and low-rise blocks:
+ * a yellow pipe along the street / entrance facade under the eaves (houses) or just
+ * above the ground-floor windows (blocks), with vertical drops to the ground and a
+ * meter box on houses.
+ */
+function gasPipes(b: Buf, bi: number, walls: Array<any>, fb: number, gMin: number, floorH: number, levels: number, typ: number): void {
+  const house = typ === Typ.House || typ === Typ.Dacha;
+  const block = typ === Typ.Khrushchevka || typ === Typ.LowriseApt || typ === Typ.Stalinka;
+  if (!house && !block) return;
+  if (typ === Typ.Dacha && hash(bi, 43) < 0.6) return; // many dachas are not connected
+  if (hash(bi, 41) > (house ? 0.85 : 0.75)) return;
+  const r = 0.028;
+  for (const w of walls) {
+    if (!w.entrance || w.hole || w.L < 4) continue;
+    const tx = (w.bx - w.ax) / w.L, tz = (w.bz - w.az) / w.L;
+    const off = 0.14;
+    const y = house ? fb + Math.min(2.5, Math.max(2.0, floorH - 0.35)) : fb + floorH + 0.12;
+    const u0 = 0.3, u1 = w.L - 0.3;
+    const at = (u: number): [number, number] => [w.ax + tx * u + w.nx * off, w.az + tz * u + w.nz * off];
+    b.kind = K.Metal; b.cr = 222; b.cg = 180; b.cb = 36; b.aux = 3;
+    b.w0 = 0; b.w1 = 0; b.w2 = 0; b.w3 = 0;
+    const [mx, mz] = at((u0 + u1) / 2);
+    b.box(mx, y, mz, tx, tz, (u1 - u0) / 2, r, r, 1, false, 1 | 2 | 16 | 32);
+    // vertical drop(s) to the ground
+    const drops = house ? [hash(bi, 45) < 0.5 ? u0 : u1] : [u0, u1];
+    for (const u of drops) {
+      const [x, z] = at(u);
+      const y0 = gMin - 0.05;
+      b.box(x, (y + y0) / 2, z, tx, tz, r, (y - y0) / 2 + r, r, 1, true, 1 | 2 | 4 | 8);
+      if (house) {
+        // gas meter box (grey steel) on the drop
+        b.cr = 150; b.cg = 152; b.cb = 150;
+        b.box(x - tx * 0.25 * Math.sign(u - w.L / 2), fb + 1.0, z - tz * 0.25 * Math.sign(u - w.L / 2), tx, tz, 0.2, 0.25, 0.12);
+        b.cr = 222; b.cg = 180; b.cb = 36;
+      }
+    }
+    // small support brackets every ~3 m
+    b.cr = 90; b.cg = 90; b.cb = 90;
+    for (let u = u0 + 1.5; u < u1 - 0.5; u += 3) {
+      const [x, z] = at(u);
+      b.box(x - w.nx * off / 2, y - r * 1.5, z - w.nz * off / 2, tx, tz, 0.015, 0.015, off / 2, 1, false, 1 | 2 | 16 | 32);
+    }
+    void levels;
+    break; // one facade
+  }
 }
 
 // ------------------------------------------------------------------ roof equipment (flat roofs)

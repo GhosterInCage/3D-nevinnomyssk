@@ -18,6 +18,8 @@ interface Label {
   alpha: number;
   target: number;                       // wanted alpha from range/fade (before declutter/occlusion)
   occluded: boolean;
+  /** false until the occlusion test has run for the current anchor/camera (label stays hidden). */
+  tested: boolean;
   occAge: number;
   w: number; hgt: number;
   sx: number; sy: number;
@@ -28,8 +30,15 @@ interface Label {
   seen: number;
 }
 
-const AREA_KINDS = new Set(['district', 'settlement']);
+const AREA_KINDS = new Set(['district', 'settlement', 'city']);
+/** The city name is only labelled from high above (it would cover the centre otherwise). */
+const CITY_MIN_AGL = 1400;
+const AREA_MIN_AGL = 25;
 const MAX_ACTIVE = 90;
+/** Street plates are shown only below this camera height above ground (m). */
+const STREET_MAX_AGL = 420;
+/** Ray samples higher than this above the ground cannot be blocked by a building. */
+const MAX_BUILDING_H = 70;
 
 function settlementType(a?: string): string {
   if (!a) return '';
@@ -50,6 +59,7 @@ function styleOf(it: PlaceItem): Label['style'] {
 /** [min, max] visible distance (m) for an item. */
 function rangeOf(it: PlaceItem): [number, number] {
   switch (it.k) {
+    case 'city': return [0, 60000];
     case 'district': return [350, it.r === 1 ? 12000 : it.r === 2 ? 8000 : 4000];
     case 'settlement': return [900, it.r === 1 ? 24000 : 14000];
     case 'street': return [0, it.r <= 1 ? 1100 : it.r === 2 ? 800 : it.r === 3 ? 550 : 380];
@@ -67,6 +77,7 @@ export class Labels {
   private active = new Map<number, Label>();
   private candTimer = 0;
   private lastCandPos = new THREE.Vector3(1e9, 0, 0);
+  private lastCamPos = new THREE.Vector3(1e9, 0, 0);
   private v = new THREE.Vector3();
   private anchorCache = new Map<string, number>();
   private rects: number[] = [];
@@ -130,7 +141,7 @@ export class Labels {
     const style = styleOf(it);
     const ks = kindStyle(it.k);
     const name = this.gz.displayName(it);
-    const el = h('div', { class: `nv-lbl nv-${style} nv-r${it.r}${style === 'pin' ? ' nv-pin' : ''}` });
+    const el = h('div', { class: `nv-lbl nv-${style} nv-k-${it.k} nv-r${it.r}${style === 'pin' ? ' nv-pin' : ''}${this.selected?.id === it.id ? ' nv-sel' : ''}` });
     let body: HTMLDivElement;
     if (style === 'area') {
       const sub = it.k === 'settlement' ? settlementType(it.a) : '';
@@ -148,7 +159,7 @@ export class Labels {
     el.append(body);
     this.layer.append(el);
     const l: Label = {
-      item: it, el, body, style, ax: it.x, ay: 0, az: it.z, anchorKey: -1, alpha: 0, target: 0, occluded: false, occAge: 99,
+      item: it, el, body, style, ax: it.x, ay: 0, az: it.z, anchorKey: -1, alpha: 0, target: 0, occluded: false, tested: false, occAge: 99,
       w: 0, hgt: 0, sx: -9999, sy: -9999, onScreen: false, dist: 0, prio: 0, lastX: NaN, lastY: NaN, lastA: -1, lastZ: -1, seen: 0,
     };
     // measure once (forces a layout for this element only)
@@ -162,11 +173,20 @@ export class Labels {
     const cam = this.ctx.camera.position;
     const agl = this.ctx.cameraAGL;
     const out: Array<{ it: PlaceItem; d: number; key: number; x: number; z: number; prio: number }> = [];
+    const sel = this.selected;
     for (const it of this.gz.items) {
-      if (it.k === 'street' && (!this.streets || agl > 260)) continue;
-      if (it.r >= 4 && agl > 500) continue;
-      if (it.k === 'bus_stop' && agl > 120) continue;
-      const [minD, maxD] = rangeOf(it);
+      const isSel = !!sel && sel.id === it.id;
+      if (!isSel) {
+        if (it.k === 'street' && (!this.streets || agl > STREET_MAX_AGL)) continue;
+        if (it.r >= 4 && agl > 500) continue;
+        if (it.k === 'bus_stop' && agl > 120) continue;
+        if (it.k === 'city' && agl < CITY_MIN_AGL) continue;
+        // district / settlement names floating over the rooftops read as clutter at pedestrian height
+        if ((it.k === 'district' || it.k === 'settlement') && agl < AREA_MIN_AGL) continue;
+      }
+      let [minD, maxD] = rangeOf(it);
+      // the selected place stays labelled from further away (it is what the user asked for)
+      if (isSel) { maxD = Math.max(maxD * 2, 2500); minD = 0; }
       // nearest anchor point
       let bx = it.x, bz = it.z, bk = -1;
       let bd = (it.x - cam.x) ** 2 + (it.z - cam.z) ** 2;
@@ -182,7 +202,7 @@ export class Labels {
       const d = Math.sqrt(bd + dy * dy);
       if (d > maxD * 1.05 || d < minD * 0.7) continue;
       if (horiz > maxD) continue;
-      const prio = it.r * 1000 + (AREA_KINDS.has(it.k) ? -500 : 0) + (it.k === 'street' ? 300 : 0) + d / maxD * 900;
+      const prio = isSel ? -1000 : it.k === 'city' ? -900 : it.r * 1000 + (AREA_KINDS.has(it.k) ? -500 : 0) + (it.k === 'street' ? 300 : 0) + d / maxD * 900;
       out.push({ it, d, key: bk, x: bx, z: bz, prio });
     }
     out.sort((a, b) => a.prio - b.prio);
@@ -197,6 +217,7 @@ export class Labels {
         l.ax = c.x; l.az = c.z;
         l.ay = this.anchorY(c.it, c.x, c.z, c.key);
         l.occAge = 99;
+        l.tested = false;
       }
       l.prio = c.prio;
       l.seen = performance.now();
@@ -229,12 +250,13 @@ export class Labels {
     // buildings between camera and label (near field, low camera only)
     const agl = ctx.cameraAGL;
     const b = ctx.get<any>('buildings');
-    if (b?.roofAt && agl < 250 && l.style !== 'area') {
+    if (b?.roofAt && agl < 250 && (l.style !== 'area' || agl < 60)) {
       const horiz = Math.hypot(dx, dz);
       const maxT = Math.min(1 - Math.min(0.6, 28 / Math.max(1, horiz)), 1100 / Math.max(1, horiz));
       const step = 7 / Math.max(1, horiz);
       for (let t = step; t < maxT; t += step) {
         const x = c.x + dx * t, y = c.y + dy * t, z = c.z + dz * t;
+        if (y - hf.sample(x, z) > MAX_BUILDING_H) continue;
         const roof = b.roofAt(x, z);
         if (roof !== null && roof > y + 0.3) return true;
       }
@@ -257,15 +279,31 @@ export class Labels {
     const view = cam.matrixWorldInverse;
     const proj = cam.projectionMatrix;
     const labels = [...this.active.values()];
-    // occlusion: a few labels per frame, oldest first
-    let budget = 6;
-    for (let i = 0; i < labels.length && budget > 0; i++) {
+    // occlusion. A camera jump (teleport, minimap drag, end of a flight) invalidates every result.
+    const jump = cam.position.distanceToSquared(this.lastCamPos) > 40 * 40;
+    this.lastCamPos.copy(cam.position);
+    for (const l of labels) {
+      // after a jump the old screen positions are meaningless: cut instead of cross-fading over the new view
+      if (jump) { l.tested = false; l.occAge = 99; l.alpha = 0; } else l.occAge += dt;
+    }
+    // 1) labels never tested since they appeared / the camera jumped: on-screen ones first (they stay hidden until tested)
+    let budget = 16;
+    for (let pass = 0; pass < 2 && budget > 0; pass++) {
+      for (const l of labels) {
+        if (budget <= 0) break;
+        if (l.tested || l.prio >= 1e9 || (pass === 0 && !l.onScreen)) continue;
+        l.occluded = this.occlusionTest(l);
+        l.tested = true; l.occAge = 0; budget--;
+      }
+    }
+    // 2) periodic re-tests, round robin
+    let re = 6;
+    for (let i = 0; i < labels.length && re > 0; i++) {
       const l = labels[(this.rr + i) % labels.length];
-      l.occAge += dt;
-      if (l.occAge > 0.35 && l.prio < 1e9) {
+      if (l.tested && l.occAge > 0.35 && l.prio < 1e9) {
         l.occluded = this.occlusionTest(l);
         l.occAge = 0;
-        budget--;
+        re--;
       }
     }
     this.rr = (this.rr + 6) % Math.max(1, labels.length);
@@ -277,7 +315,8 @@ export class Labels {
       l.sx = (v.x * 0.5 + 0.5) * W;
       l.sy = (-v.y * 0.5 + 0.5) * H;
       l.onScreen = l.sx > -60 && l.sx < W + 60 && l.sy > -40 && l.sy < H + 60;
-      const [minD, maxD] = rangeOf(l.item);
+      let [minD, maxD] = rangeOf(l.item);
+      if (this.selected && this.selected.id === l.item.id) { maxD = Math.max(maxD * 2, 2500); minD = 0; }
       const d = cam.position.distanceTo(this.v.set(l.ax, l.ay, l.az));
       l.dist = d;
       let a = 1;
@@ -298,18 +337,20 @@ export class Labels {
     for (const v of this.blockRects) rects.push(v);
     const k = 1 - Math.exp(-dt * 9);
     for (const l of labels) {
-      let want = l.onScreen && !l.occluded ? l.target : 0;
+      let want = l.onScreen && l.tested && !l.occluded ? l.target : 0;
       if (this.selected && l.item.id === this.selected.id) want = Math.max(want, l.onScreen ? 1 : 0);
       if (want > 0.02) {
         let x0: number, y0: number;
         const w = l.w + 6, hh = l.hgt + 4;
         if (l.style === 'pin') { x0 = l.sx - w / 2; y0 = l.sy - 14 - hh; }
         else { x0 = l.sx - w / 2; y0 = l.sy - hh / 2; }
-        let overlap = false;
-        for (let i = 0; i < rects.length; i += 4) {
+        const isSel = !!this.selected && l.item.id === this.selected.id;
+        // keep labels entirely on screen (a half-visible pill reads as a glitch)
+        let overlap = !isSel && (x0 < 2 || y0 < 2 || x0 + w > W - 2 || y0 + hh > H - 2);
+        for (let i = 0; i < rects.length && !overlap; i += 4) {
           if (x0 < rects[i + 2] && x0 + w > rects[i] && y0 < rects[i + 3] && y0 + hh > rects[i + 1]) { overlap = true; break; }
         }
-        if (overlap && !(this.selected && l.item.id === this.selected.id)) want = 0;
+        if (overlap && !isSel) want = 0;
         else rects.push(x0, y0, x0 + w, y0 + hh);
       }
       l.alpha += (want - l.alpha) * k;

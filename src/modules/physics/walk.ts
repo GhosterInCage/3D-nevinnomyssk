@@ -50,6 +50,8 @@ export class WalkController implements Controller {
   private airTime = 0;
   private lastFall = 0;
   sensitivity = 0.11;
+  /** called on every footfall (surface probe position = feet) */
+  onFootstep: ((x: number, y: number, z: number, swimming: boolean, strength: number) => void) | null = null;
   /** set by drive when the player gets out of the car: spawn here instead of at the camera */
   spawnHint: { x: number; y: number; z: number; heading: number } | null = null;
 
@@ -275,7 +277,16 @@ export class WalkController implements Controller {
     body.setNextKinematicTranslation({ x: this.pos.x, y: this.pos.y + RADIUS + HALF, z: this.pos.z });
     // head bob phase advances with distance walked on the ground
     const hs = Math.hypot(mv.x, mv.z) / dt;
-    if (this.grounded || this.swimming) this.bobPhase += (Math.hypot(mv.x, mv.z) / (this.sprinting ? 1.05 : 0.72)) * Math.PI;
+    if (this.grounded || this.swimming) {
+      const before = Math.floor(this.bobPhase / Math.PI);
+      this.bobPhase += (Math.hypot(mv.x, mv.z) / (this.sprinting ? 1.05 : 0.72)) * Math.PI;
+      if (Math.floor(this.bobPhase / Math.PI) !== before && this.onFootstep) {
+        try { this.onFootstep(this.pos.x, this.pos.y, this.pos.z, this.swimming, Math.min(1, 0.45 + hs / SPRINT)); } catch { /* ignore */ }
+      }
+    }
+    if (!wasGrounded && this.grounded && this.lastFall < -2.5 && this.onFootstep) {
+      try { this.onFootstep(this.pos.x, this.pos.y, this.pos.z, false, 1); } catch { /* ignore */ }
+    }
     const targetAmp = this.swimming ? 0.02 : this.grounded ? Math.min(1, hs / WALK) * (this.sprinting ? 0.06 : 0.032) : 0;
     this.bobAmp += (targetAmp - this.bobAmp) * Math.min(1, dt * 6);
   }

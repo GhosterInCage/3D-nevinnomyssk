@@ -22,7 +22,12 @@ Output: public/data/landmarks/landmarks.json   (world frame: x east, z south, me
               cells:[[x,z,seed],...], racks:[[x0,z0,x1,z1,...],...], hide:[ids], poly:[x,z,...] },
     churches: [{name,x,z,len,wid,rot,kind,domes,dome,walls,bell,h,hide:[ids],ring}],
     memorial: {x,z,rot, ...}, station:{...}, stadium:{...},
-    turbines: [[x,z],...], masts: [[x,z,h],...], weir:{line,up,down,canal}, ges4:{...}, signs:[...]
+    turbines: [[x,z],...], masts: [[x,z,h],...], weir:{line,up,down,canal,bridge}, ges4:{...}, signs:[...],
+    gres.pgu: {x,z,len,wid,rot,ring,id,stack:{x,z,h,r0,r1}},
+    substations: [{x,z,rot,len,wid,kv,hP,hB,step,pitch,name,items:[[type,lx,lz],...],buses:[[lz,x0,x1],...]}]
+      (type 0 line portal, 1 disconnector, 2 current transformer, 3 circuit breaker, 4 bus portal,
+       5 power transformer; lx/lz in the plot frame: x = X + lx cos(rot) + lz sin(rot), z = Z - lx sin + lz cos),
+    wheel: {x,z,h,rot}
   }
 """
 import json
@@ -260,6 +265,23 @@ for b in blds_in(gres_poly):
         gres["hide"].append(b["id"])
 log("  tanks", len(gres["tanks"]))
 
+
+# Combined-cycle unit PGU-410 (block 14, 2011: Siemens SGT5-PAC 4000F + SST-900 single shaft, CMI
+# horizontal heat-recovery boiler). Its main building is the 112 x 84 m footprint north of the old units;
+# the HRSG stack stands at its north-west corner, where the winter shadows show a 50-80 m structure.
+def _pgu():
+    b = bld_by_id("58c9bd4a")
+    m = mrr(b["g"])
+    m.update(ring=ring_of(b["g"]), id=b["id"])
+    x, z, h, cons = refine_stack(-776.0, -2572.0, 60, dh=10, r=8)
+    m["stack"] = dict(x=round(x, 1), z=round(z, 1), h=60.0, r0=3.6, r1=3.4, shadowH=h, consistency=cons)
+    gres["hide"].append(b["id"])
+    return m
+
+
+gres["pgu"] = optional(_pgu, "PGU-410")
+log("  PGU-410", {k: v for k, v in (gres["pgu"] or {}).items() if k != "ring"})
+
 # ============================================================================ AZOT
 log("Azot")
 az_poly = LU["Невинномысский Азот"]
@@ -272,7 +294,8 @@ TALL = [
     # x, z, first-guess height, kind
     (207.0, -3050.0, 160, "stack"),     # strongest shadow in the plant: ~160-180 m flue-gas / tail-gas stack
     (600.0, -2038.0, 80, "prill"),      # ~80 m: prilling tower (ammonium nitrate / urea)
-    (1811.0, -3024.0, 60, "column"),
+    # (1811, -3024) also scores as a ~60 m structure, but it lies on the edge of the white waste heap
+    # east of the plant (no footprint, no road): most likely the heap's own shadow edge -> not used
     (1620.0, -1740.0, 50, "column"),
 ]
 for x0, z0, h0, kind in TALL:
@@ -464,27 +487,158 @@ for s in signs:
     else:
         s["rot"] = 0.0
 
+# ============================================================================ switchyards
+# Outdoor substations (OSM power=substation outlines >= 2500 m2): bays of line portals, disconnectors,
+# current transformers, circuit breakers and bus portals laid out along the long axis of the plot,
+# double-sided around the busbars where the plot is wide enough; power transformers between the
+# sections. Items are in the plot frame (mrr: local +X = long axis), skipping building footprints.
+import re
+KV = [  # (min kV, bay pitch, element step, line portal height, bus height)
+    (450, 28.0, 12.0, 33.0, 22.0),
+    (300, 18.0, 8.5, 24.0, 16.0),
+    (100, 9.0, 5.0, 12.5, 8.5),
+    (0, 6.0, 3.5, 8.0, 6.0),
+]
+substations = []
+for r in INFRA:
+    if r["class"] != "substation":
+        continue
+    g = W(shapely.from_wkb(r["geometry"]))
+    if g.geom_type == "MultiPolygon":
+        g = max(g.geoms, key=lambda p: p.area)
+    if g.geom_type != "Polygon" or g.area < 2500:
+        continue
+    c = g.centroid
+    if abs(c.x) > REGION_HALF - 150 or abs(c.y) > REGION_HALF - 150:
+        continue
+    tags = dict(r.get("source_tags") or {})
+    if tags.get("building") or tags.get("location") == "indoor":
+        continue
+    volts = [int(v) for v in re.findall(r"\d+", tags.get("voltage", "")) if int(v) >= 1000]
+    kv = max(volts) / 1000 if volts else 110.0
+    pitch, step, hP, hB = next((p, s, a, b) for k, p, s, a, b in KV if kv >= k)
+    m = mrr(g)
+    cs, sn = math.cos(m["rot"]), math.sin(m["rot"])
+    to_w = lambda lx, lz: (m["x"] + lx * cs + lz * sn, m["z"] - lx * sn + lz * cs)  # noqa: E731
+    inner = g.buffer(-3.0)
+    blds = [b["g"].buffer(3.0) for b in blds_in(g.buffer(5))]
+    bu = shapely.union_all(blds) if blds else None
+
+    def ok(lx, lz, rad=1.5):
+        p = shapely.Point(*to_w(lx, lz))
+        return inner.contains(p.buffer(rad)) and (bu is None or not bu.intersects(p.buffer(rad)))
+
+    L, Wd = m["len"], m["wid"]
+    # rows across the plot (from the plot edge towards the busbars)
+    chain = [(0, 0.0), (1, 1.0), (2, 2.0), (3, 3.1), (1, 4.2), (4, 5.0)]
+    clen = 5.0 * step
+    margin = 4.0
+    sec_w = 2 * clen + 6.0
+    usable = Wd - 2 * margin
+    items, buses = [], []
+    if usable >= clen + 2:
+        nsec = min(2, max(1, int(usable // sec_w)))   # large plots: two bus sections, the rest stays open
+        double = usable >= sec_w
+        span = nsec * sec_w if double else clen
+        z0 = -span / 2
+        nb = max(1, int((L - 2 * margin) // pitch))
+        xs = [-(nb - 1) * pitch / 2 + i * pitch for i in range(nb)]
+        for k in range(nsec if double else 1):
+            za = z0 + k * sec_w
+            sides = [(za, 1)] + ([(za + sec_w, -1)] if double else [])
+            for zedge, dirn in sides:
+                bus_z = zedge + dirn * clen
+                used = []
+                for x in xs:
+                    for t, f in chain:
+                        lz = zedge + dirn * f * step
+                        if ok(x, lz):
+                            items.append([t, round(x, 1), round(lz, 1)])
+                            if t == 4:
+                                used.append(x)
+                if len(used) >= 2:
+                    buses.append([round(bus_z, 1), round(min(used), 1), round(max(used), 1)])
+            # power transformers between the two bus rows of a section (step-down substations)
+            if double and kv < 300:
+                zc = za + sec_w / 2
+                for i, x in enumerate(xs[::max(1, int(round(30 / pitch)))][:4]):
+                    if ok(x, zc, 4.5):
+                        items.append([5, round(x, 1), round(zc, 1)])
+    if items:
+        substations.append(dict(x=m["x"], z=m["z"], rot=m["rot"], len=L, wid=Wd, kv=kv, hP=hP, hB=hB, step=step,
+                                pitch=pitch, name=(r["names"] or {}).get("primary"), items=items, buses=buses))
+log("switchyards", [(s["name"], round(s["x"]), round(s["z"]), s["kv"], len(s["items"])) for s in substations])
+
+# ============================================================================ Ferris wheel (central park)
+# The Central Park of Culture and Rest has a Ferris wheel among its rides (published), but its position is
+# not mapped: it is placed at the most open paved spot of the park (lowest Sentinel-2 NDVI, clear of
+# buildings), facing the park's main alley direction. Height ~25 m (typical Soviet park wheel).
+wheel = None
+try:
+    park = LU.get("Центральный парк культуры и отдыха")
+    if park is not None:
+        pb = [b["g"].buffer(12) for b in blds_in(park.buffer(30))]
+        pbu = shapely.union_all(pb) if pb else None
+        best = None
+        x0_, z0_, x1_, z1_ = park.buffer(-25).bounds
+        for xx in np.arange(x0_, x1_, 5.0):
+            for zz in np.arange(z0_, z1_, 5.0):
+                p = shapely.Point(xx, zz)
+                if not park.buffer(-25).contains(p) or (pbu is not None and pbu.contains(p)):
+                    continue
+                nd = np.mean([sample(NDVI, xx + dx, zz + dz) for dx in (-15, 0, 15) for dz in (-15, 0, 15)])
+                if best is None or nd < best[0]:
+                    best = (nd, xx, zz)
+        if best:
+            wheel = dict(x=round(best[1], 1), z=round(best[2], 1), h=25.0, rot=round(mrr(park)["rot"], 4), ndvi=round(float(best[0]), 3))
+except Exception as e:  # noqa
+    log("wheel failed", e)
+log("wheel", wheel)
+
 # ============================================================================ weir (canal headworks)
 weir = None
 try:
     wj = json.load(open(os.path.join(WEB_DATA, "water", "water.json")))
     if wj.get("weir"):
         weir = dict(line=wj["weir"]["line"], up=wj["weir"]["up"], down=wj["weir"]["down"])
+        wl = shapely.LineString(weir["line"])
         for r in pq.read_table(os.path.join(RAW, "base_water.parquet")).to_pylist():
             if r["class"] == "canal" and (r["names"] or {}).get("primary") == "Невинномысский канал":
                 g = W(shapely.from_wkb(r["geometry"]))
-                if g.geom_type == "LineString" and g.distance(shapely.LineString(weir["line"])) < 60:
+                if g.geom_type == "LineString" and g.distance(wl) < 60:
                     cs = list(g.coords)
                     # canal start = end nearest to the weir
-                    wl = shapely.LineString(weir["line"])
                     if shapely.Point(cs[-1]).distance(wl) < shapely.Point(cs[0]).distance(wl):
                         cs = cs[::-1]
                     cl = shapely.LineString(cs)
-                    p0 = cl.interpolate(40)
-                    p1 = cl.interpolate(55)
+                    # the OSM canal line is drawn from the weir node along the barrage to the north
+                    # abutment; the canal proper (and its head regulator) starts where it leaves the weir
+                    s0 = 0.0
+                    while s0 < cl.length - 60 and cl.interpolate(s0).distance(wl) < 25:
+                        s0 += 2.0
+                    p0 = cl.interpolate(s0 + 22)
+                    p1 = cl.interpolate(s0 + 40)
                     weir["canal"] = dict(x=round(p0.x, 1), z=round(p0.y, 1),
                                          dir=round(math.atan2(p1.y - p0.y, p1.x - p0.x), 4))
                     break
+        # the roads module builds a road bridge over the barrage (Overture segment with is_bridge along
+        # the weir): align the weir piers with its piers so they stand inside ours, and let the runtime
+        # skip our own deck when the roads service is present
+        try:
+            import gzip
+            ob = json.load(gzip.open(os.path.join(WEB_DATA, "roads", "objects.json.gz")))
+            for br in ob.get("bridges", []):
+                ax = br.get("axis") or []
+                if len(ax) < 4:
+                    continue
+                al = shapely.LineString(np.array(ax).reshape(-1, 2))
+                if al.hausdorff_distance(wl) < 60 and al.distance(shapely.Point(weir["line"][0])) < 5:
+                    weir["bridge"] = dict(id=br["id"], piers=[p["s"] for p in br.get("piers", [])],
+                                          half=round(max(abs(br["piers"][0]["w0"]), abs(br["piers"][0]["w1"])), 2)
+                                          if br.get("piers") else 5.0)
+                    break
+        except Exception as e:  # noqa
+            log("weir: roads bridges not available", e)
 except Exception as e:  # noqa
     log("weir: water.json not available", e)
 log("weir", weir)
@@ -511,7 +665,7 @@ arena = optional(_arena, "ice arena")
 
 out = dict(version=1, generated=time.strftime("%Y-%m-%d"), gres=gres, azot=azot, churches=churches, memorial=mem,
            station=station, stadium=stadium, turbines=turbines, masts=masts, signs=signs, fountains=fountains,
-           weir=weir, ges4=ges4, arena=arena)
+           weir=weir, ges4=ges4, arena=arena, substations=substations, wheel=wheel)
 p = os.path.join(OUT_DIR, "landmarks.json")
 with open(p, "w") as f:
     json.dump(out, f, ensure_ascii=False, separators=(",", ":"))

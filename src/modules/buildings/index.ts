@@ -9,7 +9,7 @@ import type { AppContext, CityModule, StaticCollider } from '../../core/context'
 import { fetchBuffer, fetchJSON, dataUrl } from '../../core/data';
 import { parseBuildings, decodeRings, type BuildingData, Rec, REC_SIZE, R, TYP_NAMES, FLAG } from './format';
 import { floorBase, fenceEnds, type TileMesh } from './mesher';
-import { createBuildingMaterial, makeUniforms, noiseTexture, type BuildingUniforms } from './material';
+import { createBuildingMaterial, enableStreetLamps, makeUniforms, noiseTexture, type BuildingUniforms } from './material';
 
 export interface BuildingInfo {
   index: number;
@@ -40,6 +40,8 @@ export interface BuildingsAPI {
   idOf(i: number): string;
   /** Info for building index i. */
   info(i: number): BuildingInfo | null;
+  /** Rendering statistics of the buildings layer (meshes installed / visible, triangles). */
+  stats(): { meshes: number; visible: number; triangles: number; visibleTriangles: number; detailChunks: number; hidden: number };
   ready: Promise<void>;
 }
 
@@ -197,8 +199,10 @@ class Buildings {
       this.pool.run({ type: 'fetch', url }, () => 0).then((r) => { this.mark('data'); return r.buf as ArrayBuffer; })
         .catch((e) => { console.warn('[buildings] worker fetch failed, falling back', e); return fetchBuffer('buildings/buildings.bin.gz'); }),
       fetchJSON('buildings/meta.json').catch(() => ({})).then((m) => { this.mark('meta'); return m; }),
-      this.pool.run({ type: 'fetch', url: new URL(`${import.meta.env.BASE_URL}textures/buildings/noise.bin`, location.href).href }, () => 0)
-        .then((r) => { this.mark('noise'); return noiseTexture(r.buf as ArrayBuffer); })
+      // 1 MB raw bytes, no gunzip: fetch on the main thread (does not wait for a worker to boot)
+      fetch(new URL(`${import.meta.env.BASE_URL}textures/buildings/noise.bin`, location.href).href)
+        .then((r) => { if (!r.ok) throw new Error(`noise.bin ${r.status}`); return r.arrayBuffer(); })
+        .then((buf) => { this.mark('noise'); return noiseTexture(buf); })
         .catch((e) => { console.warn('[buildings] noise texture', e); return null; }),
     ]);
     this.mark('fetched');
@@ -206,7 +210,19 @@ class Buildings {
     this.d = parseBuildings(buf);
     this.rec = new Rec(this.d);
     this.u.uNoise.value = noise ?? this.fallbackNoise();
-    this.mat = ctx.registerMaterial(createBuildingMaterial(this.u));
+    const hf = ctx.heightfield;
+    this.u.bHF.value = hf.texture;
+    this.u.bHFP.value.set(hf.half, hf.res, hf.n);
+    const extra: Record<string, THREE.IUniform> = {};
+    this.mat = ctx.registerMaterial(createBuildingMaterial(this.u, extra));
+    // street lamps light the facades at night once the roads module is up
+    if (ctx.settings.wants('roads')) {
+      ctx.need<any>('roads').then((roads) => {
+        try {
+          if (enableStreetLamps(this.mat, extra, roads)) console.info('[buildings] street-lamp facade lighting on');
+        } catch (e) { console.warn('[buildings] street lamps', e); }
+      });
+    }
     this.group.name = 'buildings';
     ctx.scene.add(this.group);
     if (!ctx.settings.wants('sky')) this.fallbackLights();
@@ -633,6 +649,24 @@ class Buildings {
     return idx.length;
   }
 
+  stats(): { meshes: number; visible: number; triangles: number; visibleTriangles: number; detailChunks: number; hidden: number } {
+    let meshes = 0, visible = 0, triangles = 0, visibleTriangles = 0, detailChunks = 0, hidden = 0;
+    const cam = this.ctx.camera;
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const box = new THREE.Box3();
+    for (const c of [...this.base.values(), ...this.detail.values()]) {
+      if (!c.mesh) continue;
+      meshes++;
+      if (c.detail) detailChunks++;
+      const t = (c.mesh.geometry.index?.count ?? 0) / 3;
+      triangles += t;
+      box.copy(c.mesh.geometry.boundingBox!).applyMatrix4(c.mesh.matrixWorld);
+      if (c.mesh.visible && frustum.intersectsBox(box)) { visible++; visibleTriangles += t; }
+    }
+    for (let i = 0; i < this.hidden.length; i++) hidden += this.hidden[i];
+    return { meshes, visible, triangles, visibleTriangles, detailChunks, hidden };
+  }
+
   // ------------------------------------------------------------------ queries
   buildingAt(x: number, z: number): number {
     const c = this.query(x, z, 0.01);
@@ -708,6 +742,7 @@ const mod: CityModule & { inst?: Buildings } = {
       roofAt: (x, z) => (b.d ? b.roofAt(x, z) : null),
       idOf: (i) => b.idOf(i),
       info: (i) => (b.d && i >= 0 && i < b.d.n ? b.infoOf(i) : null),
+      stats: () => (b.d ? b.stats() : { meshes: 0, visible: 0, triangles: 0, visibleTriangles: 0, detailChunks: 0, hidden: 0 }),
       ready,
     } as BuildingsAPI;
     // phase 1: data, ground, index, workers -> publish the service early so that

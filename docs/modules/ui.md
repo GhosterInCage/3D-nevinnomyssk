@@ -7,7 +7,8 @@ The code is in `src/modules/ui/`. The data comes from `pipeline/build_places.py`
 ## What you get
 
 **Top left: title, search and place card**
-- **Search with autocomplete** (press `/`). It covers about 1,100 entries:
+- **Search with autocomplete** (press `/`). It covers about 1,090 entries:
+  - the city itself (`Невинномысск` flies to a whole-city overview)
   - Overture POIs
   - named buildings and land-use areas
   - streets, merged by name and connectivity
@@ -17,12 +18,13 @@ The code is in `src/modules/ui/`. The data comes from `pipeline/build_places.py`
   - curated landmarks
 - **Ways to search:**
   - Russian or Latin letters: `gagarin` finds `улица Гагарина`, and `grés` finds ГРЭС.
-  - Small typos are tolerated.
+  - Small typos are tolerated. Typo matching is a fallback pass that runs only when exact/prefix matching finds fewer than 3 hits, so `стадион` does not also list every "station".
+  - House numbers are optional tokens: `менделеева 34` lists улица Менделеева, then the POI at that address.
   - Text typed with the wrong keyboard layout is corrected: `uflfhbyf` finds `гагарина`.
   - A category finds places of that type, in Russian or English (`аптека`, `school`, `church`).
   - Coordinates such as `44.636, 41.94` fly to that point.
-- **Results** are ranked by match quality, importance and distance. Use ↑/↓ to move through them, Enter to fly to one and Esc to close the list. With the box empty, the list shows the main places and chips for each district.
-- **Place card.** Choosing a result flies the camera there along a smooth arc and opens a card. The card shows the category, address, description (for curated landmarks), distance, coordinates and elevation. Its buttons are *Fly here*, *Walk here* (only when the physics module is loaded) and *share link*.
+- **Results** are ranked by match quality, importance and distance. Bus stops rank slightly below the street or place they are named after. Use ↑/↓ to move through them, Enter to fly to one and Esc to close the list. With the box empty, the list shows the main places and chips for each district.
+- **Place card.** Choosing a result flies the camera there along a smooth arc and opens a card. The card shows the category, address, description (for curated landmarks), a live distance (updated while the camera flies), coordinates and elevation. Its buttons are *Fly here*, *Walk* (only when the physics module is loaded) and *share link*.
 
 **Top right: compass and toolbar**
 - **Compass rose.** It rotates with the camera heading; click it to turn and face north.
@@ -47,7 +49,7 @@ The code is in `src/modules/ui/`. The data comes from `pipeline/build_places.py`
   - **Help** (`H` / `?`). Keyboard, mouse and touch controls, plus data attribution.
   - **Fullscreen.**
 
-**Top centre: location pill.** It shows the street under the camera (from `roads.nearest`, or the gazetteer if that fails) and the district or settlement. It uses the city boundary to tell Nevinnomyssk apart from Kochubeevsky district.
+**Top centre: location pill.** It shows the nearest *named* street and the district or settlement. The street comes from a UI-side spatial index over the named edges of `roads.graph.edges`, because `roads.nearest` returns the nearest drivable edge, which is often an unnamed yard or service road. If the roads service is missing, it falls back to the gazetteer. It uses the city boundary to tell Nevinnomyssk apart from Kochubeevsky district.
 
 **Bottom left: minimap**
 - North-up and centred on the camera.
@@ -62,8 +64,10 @@ The code is in `src/modules/ui/`. The data comes from `pipeline/build_places.py`
 
 **Bottom centre: mode bar.** Buttons for Fly, Walk, Drive and Photo RTX, also on keys `1`–`4`.
 - Walk and Drive appear only when those controllers are registered, and Photo only when the `pathtracer` service exists. The bar updates on `controller:added` and `service:pathtracer`.
-- Photo calls `pathtracer.start()` and `stop()`, and shows a samples-per-pixel badge while it runs.
+- Photo calls `pathtracer.start()` and `stop()`, and shows a samples-per-pixel badge while it runs. The path tracer's own `P` / `Esc` keys work too; the bar follows `pathtracer.active`.
+- While photo mode is active, the root gets `nv-photo`, which hides the labels, the pick marker, the location pill, the brand/search/card column and the minimap (the camera is frozen while it renders). The path tracer's overlay sits at the top centre, so toasts move below it and our own "photo on" toast is skipped.
 - The bar is hidden when only Fly is available.
+- **Physics HUD awareness.** The physics module draws its own key hint at the bottom centre for about 5 s after a mode switch, and a 188 px speedometer at the bottom right in drive mode. The UI checks for `.phx-hint.on` and `.phx-dash.on` four times a second (read-only). It lifts the mode bar (and on mobile the location pill) above the hint, and the status line above the dashboard. It also skips its own mode toast when the physics hint exists. The root gets an `nv-ctl-<controller>` class for mode-specific CSS.
 
 **Bottom right:** status line with lat/lon, ground elevation, height above ground, heading and cardinal direction.
 
@@ -71,7 +75,7 @@ The code is in `src/modules/ui/`. The data comes from `pipeline/build_places.py`
 - **Click:** casts a ray against the height field and building roofs (`buildings.roofAt`) and shows an info card. The card can show:
   - For a building: typology (in Russian or English), number of floors (marked *estimated* when inferred), height, and the POI inside the same footprint.
   - Street, district, ground type (`terrain.groundTypeAt`), and the water body (`water.isWater`).
-  - Coordinates and distance.
+  - The nearest named street (within about 120 m), coordinates and distance.
 
   A pulsing marker shows the picked point.
 - **Double-click:** flies to the point.
@@ -83,8 +87,18 @@ The code is in `src/modules/ui/`. The data comes from `pipeline/build_places.py`
   - white street plates, near the ground only
   - italic water names
 - The visible distance depends on kind and rank; for example, rank 1 landmarks show up to 18 km, and minor POIs only within about 260 m.
+  - Street plates only show while the camera is below 420 m above ground. Street fly-to framing stays below that height.
+  - The city name (`НЕВИННОМЫССК`, large letter-spaced) only shows above 1,400 m above ground.
+  - District and settlement names are hidden below 25 m above ground (at pedestrian height they only float over the rooftops).
+  - The selected place (search result, clicked label) is always a candidate. It shows from at least 2.5 km and outranks everything else.
+- Labels are kept entirely inside the viewport; a half-visible pill reads as a glitch.
 - Labels fade smoothly and are placed in priority order in screen space, so they don't overlap each other or the UI panels.
-- **Occlusion:** labels hidden by the terrain are removed. Near the ground, labels hidden by buildings are removed too, using samples of building roof height along the line of sight. The checks are round-robin, a few labels per frame.
+- **Occlusion:** labels hidden by the terrain are removed. Near the ground (below 250 m above ground), labels hidden by buildings are removed too. That check samples `buildings.roofAt` every 7 m along the line of sight, skipping samples more than 70 m above the ground.
+  - A label stays hidden until its first occlusion test has run.
+  - New labels are tested first, on-screen ones before off-screen ones, up to 16 per frame.
+  - A camera jump of more than 40 m in one frame (teleport, minimap drag, end of a flight) invalidates every result and hides all labels instantly, so old labels don't cross-fade over the new view.
+  - Below 60 m above ground, area labels are building-tested too.
+  - After that, 6 labels per frame are re-tested round-robin, each about every 0.35 s.
 - For long streets and rivers, the label anchor is the closest of several points along the line.
 - Clicking a label flies there and opens its card.
 
@@ -158,7 +172,7 @@ Built by `python3 pipeline/build_places.py`, which takes about 20 s, or 2 s with
   "boundary": [x0, z0, x1, z1, ...],                          // городской округ Невинномысск, simplified 25 m
   "items": [ {
     "n": "улица Гагарина",   // name (Russian, as in OSM/Overture)
-    "k": "street",           // kind: district settlement landmark church monument park water street station bus_station bus_stop
+    "k": "street",           // kind: city district settlement landmark church monument park water street station bus_station bus_stop
                              //       industry power education medical culture sport mall shop food hotel gov fuel service allotment
                              //       viewpoint nature building
     "x": 425, "z": 1201,     // representative point
@@ -173,6 +187,11 @@ Built by `python3 pipeline/build_places.py`, which takes about 20 s, or 2 s with
   } ] }
 ```
 
+Ranking adjustments in the pipeline:
+- Street fragments shorter than 500 m never rank above 3, even on a primary road. For example, the 310 m central «улица Ленина» is not a highlight.
+- A name-based refinement pass fixes Overture's "public" and "civic" building classes. It separates administrations, ZAGS, police and MFC (rank 2–3) from post offices, passport desks, fire stations, saunas and vets (rank 4). Unrecognised civic buildings drop to rank 4.
+- Name keywords refine generic categories, for example `МБОУ СОШ №12` is filed under Школа rather than Учебное заведение.
+
 The items come from these sources, merged and deduplicated by name, aliases and distance:
 - Overture `places`. Instagram-style handles are dropped. Wildberries/CDEK pickup points and low-confidence places are demoted to rank 5.
 - Named buildings.
@@ -180,7 +199,7 @@ The items come from these sources, merged and deduplicated by name, aliases and 
 - Infrastructure: bus stops (merged per stop pair), railway stations and halts, viewpoints, power plants and substations.
 - Water lines, clipped to the region.
 - Street segments. Segments with the same name are clustered when they are within 500 m of each other, so `улица Ленина` in Nevinnomyssk and in Kochubeevskoye stay separate, and each cluster is tagged with its settlement from the Overture division polygons.
-- A curated list of about 22 landmarks and 11 districts. It has hand-checked positions, taken from Overture / `landmarks.json`, plus short descriptions.
+- A curated list of about 23 landmarks, 11 districts and the city itself (kind `city`, at (250, 400), with a description: founded 1825, town status 1939, about 117 thousand inhabitants in 2025). It has hand-checked positions, taken from Overture / `landmarks.json`, plus short descriptions.
 
 Transliteration and search normalisation happen at runtime (`translit.ts`), so the file stays compact.
 
@@ -193,6 +212,8 @@ Transliteration and search normalisation happen at runtime (`translit.ts`), so t
 - The city boundary.
 
 Vector overlays are drawn at 2× supersampling. The minimap, the big map and the loading screen all use this image.
+
+The minimap's vector layer caches decoded building footprints, so decoding isn't repeated on every redraw. The cache is cleared above 30,000 entries.
 
 **Facts and sources.**
 - GRES: first turbine June 1960, ≈1550 MW. Source: nevadm.ru news, 2021 and 2025.
@@ -226,6 +247,12 @@ node src/modules/ui/dev/ui-shot.mjs --steps '[{"press":"/"},{"type":"gagarin","o
 ```
 
 The script pauses the render loop before each capture, because SwiftShader frames take 5–20 s when frames render continuously.
+
+Step fields are applied in this order: `eval`, `type`, `press`, `click`, `tap`, `until`, `settle`, `out`.
+- `until` is a JS expression polled until it is truthy.
+- The core clamps `dt` to 0.1 s and SwiftShader renders about one frame per second, so camera flights crawl in the harness. To jump to the end of a flight, use `{"eval":"__ui.flight.t=0.97","until":"!__ui.flight.active"}`.
+- The default ready timeout is 15 min, because a full-city load takes about 7 min on a busy 4-core machine.
+- `--loading-shot file --loading-wait ms --loading-only 1` captures the loading screen.
 
 ## Keyboard
 

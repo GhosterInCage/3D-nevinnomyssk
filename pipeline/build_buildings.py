@@ -58,6 +58,7 @@ import buildings_features as bf
 from buildings_geom import rect_decompose, mrr_dims, square_polygon
 import buildings_s2winter as s2w
 from buildings_fences import build_fences
+from buildings_roads import filter_on_roads
 
 OUT = os.path.join(WEB_DATA, "buildings")
 TILE = 512.0
@@ -672,8 +673,19 @@ def main():
     else:
         S = pickle.load(open(scache, "rb"))
     F.update(S)
+    assert len(F['area']) == len(recs), "feature cache out of date: run with --refresh"
+    # ML footprints on road carriageways / rail beds (cross-module rule with `roads`)
+    keep, n_drop, n_trim = filter_on_roads(recs)
+    recs = [r for r, k in zip(recs, keep) if k]
+    F = {key: (v[keep] if isinstance(v, np.ndarray) and len(v) == len(keep) else v) for key, v in F.items()}
+    for k, r in enumerate(recs):
+        if abs(r['geom'].area - F['area'][k]) > 0.5:  # trimmed: refresh the shape features
+            Lm, Wm, _, _ = mrr_dims(r['geom'])
+            F['area'][k] = r['geom'].area
+            F['log_area'][k] = math.log(max(r['geom'].area, 1.0))
+            F['length'][k], F['width'][k] = Lm, Wm
+            F['elong'][k] = Lm / max(Wm, 0.1)
     n = len(recs)
-    assert len(F['area']) == n, "feature cache out of date: run with --refresh"
     levels = np.array([r['levels'] or 0 for r in recs])
     classes, proba, report = train_level_model(F, levels)
     typ, lev, labelled, hovr, minh, _ = classify(recs, F, classes, proba)
@@ -687,7 +699,8 @@ def main():
     name_idx = {}
     out_recs = []
     for k, r in enumerate(recs):
-        rnd = Rnd(r['id'] + str(k))
+        # stable per-building stream: Overture id + rounded centroid (parts of a split multipolygon differ)
+        rnd = Rnd(f"{r['id']}:{int(round(F['cx'][k]))}:{int(round(F['cy'][k]))}")
         t = int(typ[k])
         p = params_for(k, r, t, int(lev[k]), bool(labelled[k]), F, rnd, hovr[k], minh[k])
         parts = roof_parts(r, p)

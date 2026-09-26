@@ -1,6 +1,6 @@
 {
  "version": 1,
- "count": 57419,
+ "count": 57111,
  "tileSize": 512.0,
  "tilesX": 40,
  "typologies": [
@@ -221,16 +221,16 @@
  },
  "stats": {
   "typology": {
-   "outbuilding": 16878,
-   "house": 30010,
+   "outbuilding": 16761,
+   "house": 29943,
    "agricultural": 32,
    "khrushchevka": 515,
    "lowrise_apartments": 552,
-   "garages": 1373,
-   "warehouse": 1103,
+   "garages": 1364,
+   "warehouse": 1098,
    "commercial": 426,
-   "dacha": 4048,
-   "utility": 1078,
+   "dacha": 3944,
+   "utility": 1072,
    "tower": 19,
    "industrial": 858,
    "public": 193,

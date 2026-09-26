@@ -44,6 +44,13 @@ export class Car {
   reversing = false;
   lights = false;
   driven = false;       // someone is at the wheel
+  /** max tyre slip of the last step (0..1), for audio / effects */
+  slip = 0;
+  /** effective throttle after the reverse logic (0..1) */
+  throttleOut = 0;
+  /** strongest collision jolt since last read (m/s of velocity change in one step) */
+  impact = 0;
+  private lastLin = new THREE.Vector3();
   private shiftTimer = 0;
   private reverseHold = 0;
   private upsideDown = 0;
@@ -149,6 +156,7 @@ export class Car {
     this.readState();
     this.prevPos.copy(this.pos); this.prevQuat.copy(this.quat);
     this.gear = 1; this.rpm = IDLE; this.steer = 0; this.upsideDown = 0;
+    this.lastLin.set(0, 0, 0); this.impact = 0; this.slip = 0;
     this.skids.breakAll();
   }
 
@@ -181,6 +189,7 @@ export class Car {
     }
     this.reversing = this.gear === -1 && throttle > 0.05;
     this.braking = brake;
+    this.throttleOut = throttle;
 
     // --- engine
     const ratio = GEARS[this.gear + 1] ?? 0;
@@ -295,6 +304,12 @@ export class Car {
     this.prevPos.copy(this.pos);
     this.prevQuat.copy(this.quat);
     this.readState();
+    {
+      const lv = this.body.linvel();
+      const dv = Math.hypot(lv.x - this.lastLin.x, lv.y - this.lastLin.y, lv.z - this.lastLin.z);
+      this.lastLin.set(lv.x, lv.y, lv.z);
+      if (dv > 1.2) this.impact = Math.max(this.impact, dv);
+    }
     const v = this.vehicle;
     for (let i = 0; i < 4; i++) {
       this.wheelPrev[i] = this.wheelCur[i];
@@ -334,6 +349,7 @@ export class Car {
 
   private emitSkids(): void {
     const v = this.vehicle, body = this.body;
+    let maxSlip = 0;
     const lv = body.linvel(), av = body.angvel();
     const com = body.translation();
     const inp = this.input;
@@ -355,10 +371,12 @@ export class Car {
         if (i >= 2 && inp.handbrake && along > 2) slip = Math.max(slip, 0.8);
         if (i < 2 && inp.throttle > 0.9 && this.gear === 1 && along < 7) slip = Math.max(slip, 0.5 * (1 - along / 7));
       }
+      if (slip > maxSlip) maxSlip = slip;
       const n = v.wheelContactNormal(i);
       if (slip > 0.15) this.skids.add(i, cp.x, cp.y, cp.z, n ? n.x : 0, n ? n.y : 1, n ? n.z : 0, f.x, f.z, slip);
       else this.skids.lift(i);
     }
+    this.slip = maxSlip;
   }
 
   // ------------------------------------------------------------------ rendering
@@ -380,6 +398,7 @@ export class Car {
       const rp = pv.clone().applyEuler(b.rotation);
       b.position.set(pv.x - rp.x, pv.y - rp.y, pv.z - rp.z);
     }
+    m.steeringWheel.rotation.z = -steer * 14; // ~16:1 steering ratio, a little less for readability
     for (let i = 0; i < 4; i++) {
       const w = m.wheels[i];
       const susp = this.suspPrev[i] + (this.suspCur[i] - this.suspPrev[i]) * alpha;
